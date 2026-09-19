@@ -30,6 +30,11 @@ referenced in [`README.md`](README.md).
   enabling publication. It reports exclusions without caching private data.
 - Set trusted `STAC_ASSET_ORIGINS` for bounded anonymous media verification.
   Unsupported or unverified assets remain excluded with diagnostic reasons.
+  Colour-table assets are included in verification. Exhausting the probe count
+  or build deadline returns 503 instead of publishing a truncated catalog;
+  the private report retains a publication-level budget reason.
+- Root and Collection links expose the paginated resource lists to clients
+  and the traversal audit, without claiming STAC API conformance.
 - `npm run audit:stac` and the opt-in weekly `STAC Resource Audit` workflow
   check resource traversal, schema identity and anonymous asset reachability.
 

@@ -69,7 +69,7 @@ export async function auditStac(options: AuditOptions): Promise<AuditReport> {
     if (isResource && !document.links.some(link => object(link) && link.rel === 'self' && safe(link.href))) issue(location, 'self_missing')
     for (const link of document.links) {
       if (!object(link) || !safe(link.href)) { issue(location, 'invalid_or_untrusted_link'); continue }
-      if (['self', 'root', 'parent', 'child', 'item', 'collection', 'items', 'next'].includes(String(link.rel))) {
+      if (['self', 'root', 'parent', 'child', 'item', 'collection', 'data', 'items', 'next'].includes(String(link.rel))) {
         const target = new URL(link.href)
         if (target.origin !== root.origin || !(target.pathname === root.pathname || target.pathname.startsWith(root.pathname + '/'))) {
           issue(link.href, 'traversal_outside_root'); continue

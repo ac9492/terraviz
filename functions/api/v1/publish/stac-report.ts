@@ -22,6 +22,7 @@ export const onRequestGet: PagesFunction<CatalogEnv> = async context => {
     const rows = publication.report
     const excluded = rows.filter(row => !row.included).length
     return json(200, { schema_version: 1, publication_enabled: context.env.STAC_ENABLED === 'true',
+      publication_issues: publication.publicationIssues,
       totals: { evaluated: rows.length, included: rows.length - excluded, excluded }, records: rows })
   } catch {
     return json(503, { error: 'stac_report_unavailable' })

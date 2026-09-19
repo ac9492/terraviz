@@ -12,6 +12,7 @@ import type { StacCatalog } from './stac-types'
 export interface StacPublication {
   catalog: StacCatalog
   products: StacProduct[]
+  publicationIssues: string[]
   report: { id: string; included: boolean; reasons: string[] }[]
 }
 
@@ -26,6 +27,7 @@ export function stacResolvers(node: StacNodeContext, assets: Map<string, StacRes
     resource: (kind, id) => kind === 'catalog' ? base
       : kind === 'manifest' ? `${node.identity.base_url.replace(/\/$/, '')}/api/v1/datasets/${encodeURIComponent(id)}/manifest`
         : `${base}/${kind === 'collection' ? 'collections' : 'items'}/${encodeURIComponent(id)}`,
+    listing: (kind, collectionId) => collectionId ? `${base}/collections/${encodeURIComponent(collectionId)}/items` : `${base}/${kind}`,
     asset: (ref, purpose) => {
       const asset = assets.get(ref)
       if (!asset) return null
@@ -46,7 +48,7 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
   if (!model.node) throw new Error('Missing node identity')
   const branding = model.branding
   if (branding) model.node.publicOrgName = branding.org_name
-  const seed = JSON.stringify({ version: 2, model, r2: env.R2_PUBLIC_BASE ?? null, origins: env.STAC_ASSET_ORIGINS ?? null })
+  const seed = JSON.stringify({ version: 3, model, r2: env.R2_PUBLIC_BASE ?? null, origins: env.STAC_ASSET_ORIGINS ?? null })
   const key = `stac:publication:v1:${(await computeEtag(seed)).replace(/"/g, '')}`
   if (env.CATALOG_KV && !options.operatorReport) {
     try {
@@ -56,7 +58,8 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
   }
   const products: StacProduct[] = []
   const report: StacPublication['report'] = []
-  const { assets, issues } = await verifyStacAssets(env, model)
+  const { assets, issues, budgetExhausted } = await verifyStacAssets(env, model)
+  if (budgetExhausted && !options.operatorReport) throw new Error('STAC asset probe budget exceeded')
   const logo = branding?.logo_ref ? assets.get(branding.logo_ref) : undefined
   if (logo?.type.startsWith('image/')) {
     model.node.publicLogo = { href: logo.href, type: logo.type }
@@ -71,7 +74,8 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
   }
   const catalog = buildStacCatalog(model.node, resolvers, products)
   if (!catalog.ok) throw new Error(`Invalid STAC catalog: ${catalog.reasons.join(',')}`)
-  const publication = { catalog: catalog.value, products, report }
+  const publication = { catalog: catalog.value, products, report,
+    publicationIssues: budgetExhausted ? ['asset_probe_budget_exceeded'] : [] }
   if (env.CATALOG_KV && !options.operatorReport) {
     try { await env.CATALOG_KV.put(key, JSON.stringify(publication), { expirationTtl: 300 }) } catch { /* Best-effort cache. */ }
   }

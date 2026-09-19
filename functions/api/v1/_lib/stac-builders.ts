@@ -22,6 +22,7 @@ export interface StacResolvedAsset {
 export interface StacResolvers {
   /** Publication adapters must return deployed, public routes; manifest is the existing native playback manifest, not a STAC endpoint. */
   resource(kind: 'catalog' | 'collection' | 'item' | 'manifest', id: string): string
+  listing?(kind: 'collections' | 'items', collectionId?: string): string
   asset(ref: string, purpose: string): StacResolvedAsset | null
   origin?(nodeId: string, datasetId: string): string | null
   schemas?: StacSchemaValidator
@@ -44,6 +45,13 @@ function resourceUrl(resolvers: StacResolvers, kind: Parameters<StacResolvers['r
   let href: string
   try { href = resolvers.resource(kind, id) } catch { return null }
   return isPublicStacUrl(href) ? href : null
+}
+
+function listingUrl(resolvers: StacResolvers, kind: 'collections' | 'items', collectionId?: string): string | null {
+  try {
+    const href = resolvers.listing?.(kind, collectionId)
+    return isPublicStacUrl(href) ? href : null
+  } catch { return null }
 }
 
 export function buildStacGeometry(bounds: { n: number; s: number; w: number; e: number } | null): StacSpatial {
@@ -121,6 +129,12 @@ export function buildStacCatalog(node: StacNodeContext, resolvers: StacResolvers
   if (!root) return { ok: false, reasons: ['resource_url_invalid'] }
   if (node.customFields?.some(field => field.scope !== 'Catalog')) return { ok: false, reasons: ['custom_field_scope_invalid'] }
   const links = [link('self', root), link('root', root)]
+  if (resolvers.listing) {
+    const collections = listingUrl(resolvers, 'collections')
+    const items = listingUrl(resolvers, 'items')
+    if (!collections || !items) return { ok: false, reasons: ['resource_url_invalid'] }
+    links.push(link('data', collections), link('items', items, 'application/geo+json'))
+  }
   for (const product of children) {
     const child = product.collection ?? product.item
     if (!child) continue
@@ -166,6 +180,8 @@ export function buildStacProduct(model: StacDatasetReadModel, node: StacNodeCont
   const itemId = readiness.identity.item_id!
   const root = resourceUrl(resolvers, 'catalog', node.identity.node_id)
   const collectionUrl = spatial.geometry ? resourceUrl(resolvers, 'collection', collectionId) : null
+  const collectionItemsUrl = collectionUrl && resolvers.listing ? listingUrl(resolvers, 'items', collectionId) : null
+  if (collectionUrl && resolvers.listing && !collectionItemsUrl) return { ok: false, reasons: ['resource_url_invalid'] }
   const itemUrl = readiness.temporal.ready ? resourceUrl(resolvers, 'item', itemId) : null
   const manifestUrl = resourceUrl(resolvers, 'manifest', row.id)
   if (!root || !manifestUrl || (spatial.geometry && !collectionUrl) || (readiness.temporal.ready && !itemUrl)) return { ok: false, reasons: ['resource_url_invalid'] }
@@ -251,7 +267,9 @@ export function buildStacProduct(model: StacDatasetReadModel, node: StacNodeCont
   const collection: StacCollection | null = collectionUrl && spatial.bbox ? {
     type: 'Collection', stac_version: STAC_VERSION, stac_extensions: [], id: collectionId, ...common, license,
     extent: { spatial: { bbox: [spatial.bbox] }, temporal: { interval: [interval ?? [null, null]] } },
-    links: [link('self', collectionUrl), link('root', root), link('parent', root), ...(itemUrl ? [link('item', itemUrl, 'application/geo+json')] : []), ...extraLinks],
+    links: [link('self', collectionUrl), link('root', root), link('parent', root),
+      ...(collectionItemsUrl ? [link('items', collectionItemsUrl, 'application/geo+json')] : []),
+      ...(itemUrl ? [link('item', itemUrl, 'application/geo+json')] : []), ...extraLinks],
     ...(!itemUrl ? { assets } : {}),
   } : null
   let item: StacItem | null = null

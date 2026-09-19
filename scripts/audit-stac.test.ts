@@ -12,12 +12,13 @@ import schema from '../docs/metadata/schemas/terraviz-v1.0.0.json'
 describe('STAC traversal and reachability audit', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it('traverses real route output, native manifests and declared schemas without live network', async () => {
-    const { sqlite, env } = stacRouteFixture(3)
+  it.each([{ count: 3, failNext: false }, { count: 51, failNext: false }, { count: 51, failNext: true }])('audits real root-discovered listings and next pages: %j', async ({ count, failNext }) => {
+    const { sqlite, env } = stacRouteFixture(count)
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'Content-Type': 'image/png' } })))
     try {
       const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
         const url = new URL(String(input))
+        if (failNext && url.searchParams.has('cursor')) return new Response(null, { status: 503 })
         if (url.pathname.startsWith('/api/v1/stac')) return onRequestGet(makeCtx({ env, url: url.href }) as never)
         if (url.pathname.endsWith('/manifest')) {
           const response = await manifestGet(makeCtx({ env, url: url.href, params: { id: url.pathname.split('/')[4] } }) as never)
@@ -28,7 +29,17 @@ describe('STAC traversal and reachability audit', () => {
         throw new Error('Unexpected URL')
       })
       const report = await auditStac({ root: 'https://node.example/api/v1/stac', allowedOrigins: ['https://data.example'], fetchImpl })
-      expect(report).toMatchObject({ ok: true, documents: 7, assets: 4, schemas: 1, issues: [] })
+      expect(report.ok).toBe(!failNext)
+      if (failNext) expect(report.issues).toEqual([
+        expect.objectContaining({ code: 'document_http_503' }), expect.objectContaining({ code: 'document_http_503' }),
+      ])
+      else expect(report).toMatchObject({ documents: 1 + count * 4 + 4 + (count > 50 ? 2 : 0), assets: count + 1, schemas: 1, issues: [] })
+      const urls = fetchImpl.mock.calls.map(([input]) => new URL(String(input)))
+      expect(urls.some(url => url.pathname === '/api/v1/stac/collections')).toBe(true)
+      expect(urls.some(url => url.pathname === '/api/v1/stac/items')).toBe(true)
+      expect(new Set(urls.filter(url => /\/collections\/[^/]+\/items$/.test(url.pathname)).map(url => url.pathname)).size).toBe(count)
+      if (count > 50) expect(urls.filter(url => url.searchParams.has('cursor')).map(url => url.pathname).sort())
+        .toEqual(['/api/v1/stac/collections', '/api/v1/stac/items'])
       expect(fetchImpl.mock.calls.every(([, init]) => init?.credentials === 'omit' && init.redirect === 'manual')).toBe(true)
     } finally { sqlite.close() }
   })

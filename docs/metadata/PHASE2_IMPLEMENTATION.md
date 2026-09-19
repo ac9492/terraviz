@@ -1,7 +1,7 @@
 # Phase 2: Browsable Core Resources
 
 **Status:** Implemented; deployment opt-in required
-**Last reviewed:** 2026-09-18
+**Last reviewed:** 2026-09-19
 **Revisit when:** Public profile snapshots, custom registry storage or immutable history ships.
 
 | Step | Implementation |
@@ -43,6 +43,12 @@ Lists accept `limit` (1-100, default 50) and `cursor` (last emitted ID).
 Malformed or unknown query parameters are rejected, including search filters;
 no `/search`, `/conformance` or API conformance declarations are offered.
 
+The root links to `/collections` with `rel="data"` and `/items` with
+`rel="items"`. Each Collection links to its own items listing. These are
+deployed resource-list entry points, not an STAC API conformance declaration.
+The existing static child/item links remain available; pagination does not
+yet bound the root Catalog's size.
+
 Canonical absolute URLs come from the stored node base URL, never the request
 Host header. Collections/Catalogs use `application/json`; Items and
 FeatureCollections use `application/geo+json`. Conditional GET supports weak
@@ -68,13 +74,20 @@ consistency, not an impossible promise to revoke bytes already in flight.
 
 On a cache miss assets must pass anonymous HEAD with a real Content-Type.
 Only explicit HTTPS origins are probed, with no redirects or cookies, a
-three-second per-request timeout, a fifteen-second build deadline and a maximum of 40 distinct URL probes per
-snapshot build. Unverified assets (including budget overflow and HEAD-unsupported
-servers) are withheld, not advertised speculatively. Verification is retained
+three-second per-request timeout, a fifteen-second build deadline and a maximum
+of 40 distinct URL probes per snapshot build. Count or build-deadline exhaustion
+fails the entire public response with a no-store 503, including when only an
+optional asset or logo exceeded the budget. No partial snapshot is cached.
+The cache input version changes with this behavior so earlier partial snapshots
+cannot be reused. The operator report remains available with a publication-level
+budget reason. Individual unverifiable assets, including HEAD-unsupported
+servers, are still withheld rather than advertised speculatively. Colour-table
+references are verified alongside primary media and the other supporting assets.
+Verification is retained
 with the five-minute snapshot; later external outages are caught by the audit
 or the next rebuild, not treated as a permanent availability guarantee. Large
 catalogs needing more probes require a separately reviewed persisted verification
-worker; this release deliberately fails closed at its bounded request budget.
+worker; this release refuses public publication beyond its bounded request budget.
 
 The initial resolver supports durable direct URLs and configured public R2
 assets. Unsupported/unresolved delivery schemes are withheld rather than
@@ -89,12 +102,16 @@ disabled until their storage, permissions and publication tests exist.
 `GET /api/v1/publish/stac-report` uses the existing Cloudflare Access publisher
 middleware and additionally requires an active admin or service operator. It
 works with public STAC disabled, so remediation can precede opt-in. The response
-is versioned JSON: `schema_version`, `publication_enabled`, `totals` and sorted
+is versioned JSON: `schema_version`, `publication_enabled`, `publication_issues`, `totals` and sorted
 `records` with immutable `id`, `included` and machine-readable `reasons`.
 Non-public rows receive `not_public`; their assets are never probed. Scientific
 readiness reasons are preserved. Unresolved primary assets also carry concrete
 verification reasons such as `asset_origin_untrusted`, `asset_http_403`,
 `asset_probe_failed` or `asset_probe_budget_exceeded`.
+`publication_issues` contains `asset_probe_budget_exceeded` when the public
+snapshot cannot be completed, even if all primary assets passed and only an
+optional asset or logo exceeded the budget. In that case the row-level totals
+describe evaluated candidates, not a successfully published partial catalog.
 
 This endpoint is always `private, no-store`, never reads or writes the public
 KV snapshot, and does not return private titles, source URLs, draft prose or
@@ -110,6 +127,8 @@ collection membership, unsupported API paths, weak/list/wildcard conditional
 GET, node-description changes, logo replacement/removal, private draft
 non-dependencies, dataset/decorations/renditions/delivery changes, deployment
 R2 changes, visibility withdrawal with warm KV, and KV/D1 failure behavior.
+Distinct primary URLs exercise the 40/41/60-probe boundaries; optional-asset
+overflow and a deadline expiring on the final probe also reject publication.
 The pinned official core and extension validator also validates actual HTTP
 output, not only hand-built projection fixtures. Richer mapping invalidation
 tests remain deferred together with those disabled mappings.
@@ -134,6 +153,10 @@ health audit, not an STAC API conformance test or proof of scientific accuracy.
 
 The normal CI Vitest suite runs `scripts/audit-stac.test.ts` against real local
 route handlers and controlled failures, without network dependence. The
+root-only traversal test discovers all listing shapes and follows real next
+pages across 51 records, including failure when a next page returns 503. Its
+shared image URL deliberately isolates pagination from the distinct-URL budget
+tests above. The
 `STAC Resource Audit` workflow also supports weekly/manual live runs. Configure
 repository variables `STAC_AUDIT_ROOT` and `STAC_AUDIT_ORIGINS` only after
 publication is enabled. Without a root it is explicitly skipped. Each run

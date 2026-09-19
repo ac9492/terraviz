@@ -10,6 +10,23 @@ describe('operator STAC report', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'Content-Type': 'image/png' } }))))
   afterEach(() => vi.unstubAllGlobals())
 
+  it('remains available with a publication-level reason and per-row budget diagnostics', async () => {
+    const { sqlite, ids, env } = stacRouteFixture(60)
+    try {
+      for (const id of ids) sqlite.prepare('UPDATE datasets SET data_ref=? WHERE id=?').run(`url:https://data.example/${id}.png`, id)
+      const context = makeCtx({ env })
+      context.data = { publisher: { role: 'admin', is_admin: 1, status: 'active' } }
+      const response = await onRequestGet(context as never)
+      expect(response.status).toBe(200)
+      expect(response.headers.get('cache-control')).toBe('private, no-store')
+      const body = await response.json() as { records: { included: boolean; reasons: string[] }[] }
+      expect(body).toMatchObject({ publication_issues: ['asset_probe_budget_exceeded'], totals: { evaluated: 60, included: 40, excluded: 20 } })
+      expect(body.records.filter(row => !row.included).every(row => row.reasons.includes('asset_probe_budget_exceeded'))).toBe(true)
+      expect(env.CATALOG_KV.get).not.toHaveBeenCalled()
+      expect(env.CATALOG_KV.put).not.toHaveBeenCalled()
+    } finally { sqlite.close() }
+  })
+
   it.each([undefined, { role: 'publisher', status: 'active', is_admin: 0 },
     { role: 'admin', status: 'suspended', is_admin: 1 }])('rejects unauthorized callers before reading D1: %j', async publisher => {
     const context = makeCtx({ env: {} })

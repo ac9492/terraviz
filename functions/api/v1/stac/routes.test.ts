@@ -16,6 +16,86 @@ describe('STAC public routes', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'Content-Type': 'image/png' } }))))
   afterEach(() => vi.unstubAllGlobals())
 
+  it('advertises deployed listing routes with canonical links and matching media types', async () => {
+    const { sqlite, env } = stacRouteFixture()
+    try {
+      const publication = await readStacPublication(env)
+      expect(publication.catalog.links).toEqual(expect.arrayContaining([
+        { rel: 'data', href: 'https://node.example/api/v1/stac/collections', type: 'application/json' },
+        { rel: 'items', href: 'https://node.example/api/v1/stac/items', type: 'application/geo+json' },
+      ]))
+      const collection = publication.products[0].collection!
+      expect(collection.links).toContainEqual({ rel: 'items', href: `https://node.example/api/v1/stac/collections/${collection.id}/items`, type: 'application/geo+json' })
+      for (const link of [...publication.catalog.links, ...collection.links].filter(link => ['data', 'items'].includes(link.rel))) {
+        const response = await onRequestGet(makeCtx({ env, url: link.href }) as never)
+        expect(response.status).toBe(200)
+        expect(response.headers.get('content-type')).toContain(link.type)
+      }
+    } finally { sqlite.close() }
+  })
+
+  it.each([40, 41, 60])('never publishes a truncated catalog for %s distinct primary URLs', async count => {
+    const { sqlite, ids, env } = stacRouteFixture(count)
+    try {
+      for (const id of ids) sqlite.prepare('UPDATE datasets SET data_ref=? WHERE id=?').run(`url:https://data.example/${id}.png`, id)
+      const response = await onRequestGet(makeCtx({ env, url: 'https://node.example/api/v1/stac' }) as never)
+      expect(fetch).toHaveBeenCalledTimes(Math.min(count, 40))
+      expect(response.status).toBe(count === 40 ? 200 : 503)
+      if (count === 40) {
+        expect((await response.json() as StacCatalog).links.filter(link => link.rel === 'child')).toHaveLength(40)
+      } else {
+        expect(response.headers.get('cache-control')).toBe('no-store')
+        expect(await response.json()).toEqual({ error: 'stac_unavailable' })
+        expect(env.CATALOG_KV.put).not.toHaveBeenCalled()
+      }
+    } finally { sqlite.close() }
+  })
+
+  it('fails the whole publication when an optional asset exceeds the probe budget', async () => {
+    const { sqlite, ids, env } = stacRouteFixture(40)
+    try {
+      for (const id of ids) sqlite.prepare('UPDATE datasets SET data_ref=? WHERE id=?').run(`url:https://data.example/${id}.png`, id)
+      sqlite.prepare('UPDATE datasets SET color_table_ref=? WHERE id=?').run('url:https://data.example/colors.json', ids[39])
+      const response = await onRequestGet(makeCtx({ env, url: 'https://node.example/api/v1/stac' }) as never)
+      expect(response.status).toBe(503)
+      expect(env.CATALOG_KV.put).not.toHaveBeenCalled()
+      expect((await readStacPublication(env, { operatorReport: true })).publicationIssues).toEqual(['asset_probe_budget_exceeded'])
+    } finally { sqlite.close() }
+  })
+
+  it('fails without caching when the build deadline expires during the final probe', async () => {
+    const { sqlite, env } = stacRouteFixture()
+    const deadline = new AbortController()
+    const timeout = AbortSignal.timeout.bind(AbortSignal)
+    const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds => milliseconds === 15000 ? deadline.signal : timeout(milliseconds))
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      deadline.abort()
+      throw new Error('Deadline expired')
+    }))
+    try {
+      const response = await onRequestGet(makeCtx({ env, url: 'https://node.example/api/v1/stac' }) as never)
+      expect(response.status).toBe(503)
+      expect(response.headers.get('cache-control')).toBe('no-store')
+      expect(env.CATALOG_KV.put).not.toHaveBeenCalled()
+    } finally { spy.mockRestore(); sqlite.close() }
+  })
+
+  it('verifies and publishes a trusted colour-table asset', async () => {
+    const { sqlite, ids, env } = stacRouteFixture()
+    const href = 'https://data.example/colors.json'
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => new Response(null, {
+      headers: { 'Content-Type': input === href ? 'application/json' : 'image/png' },
+    })))
+    try {
+      sqlite.prepare('UPDATE datasets SET color_table_ref=?').run(`url:${href}`)
+      const response = await onRequestGet(makeCtx({ env, url: `https://node.example/api/v1/stac/items/${ids[0]}` }) as never)
+      expect(response.status).toBe(200)
+      expect((await response.json() as StacItem).assets['color-table']).toMatchObject({ href, type: 'application/json' })
+      expect(fetch).toHaveBeenCalledWith(href, expect.objectContaining({ method: 'HEAD', credentials: 'omit', redirect: 'manual' }))
+      expect((await readStacPublication(env)).report[0].reasons).not.toContain('color-table_asset_unresolved')
+    } finally { sqlite.close() }
+  })
+
   it.each(['search', 'conformance', 'collections/missing', 'items/missing', 'collections/missing/items'])('returns no-store 404 for unsupported or missing %s', async path => {
     const { sqlite, env } = stacRouteFixture()
     try {

@@ -10,7 +10,7 @@ import type { StacPublicationInput } from './stac-publication-store'
 interface VerifiedUrl { href: string; type: string }
 
 export async function verifyStacAssets(env: CatalogEnv, model: StacPublicationInput): Promise<{
-  assets: Map<string, StacResolvedAsset>; issues: Map<string, string>
+  assets: Map<string, StacResolvedAsset>; issues: Map<string, string>; budgetExhausted: boolean
 }> {
   const origins = new Set((env.STAC_ASSET_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean))
   if (env.R2_PUBLIC_BASE && isPublicStacUrl(env.R2_PUBLIC_BASE)) origins.add(new URL(env.R2_PUBLIC_BASE).origin)
@@ -21,7 +21,7 @@ export async function verifyStacAssets(env: CatalogEnv, model: StacPublicationIn
     const readiness = evaluateMetadataReadiness({ ...dataset.row, publication_kind: dataset.publicationKind })
     if (dataset.row.transcoding === 1 || ['excluded', 'needs_review'].includes(readiness.decision)) continue
     for (const ref of [dataset.row.data_ref, ...dataset.renditions.map(entry => entry.ref), dataset.row.thumbnail_ref,
-      dataset.row.sphere_thumbnail_ref, dataset.row.legend_ref, dataset.row.caption_ref, dataset.row.license_url]) {
+      dataset.row.sphere_thumbnail_ref, dataset.row.legend_ref, dataset.row.caption_ref, dataset.row.color_table_ref, dataset.row.license_url]) {
       if (ref) references.add(ref)
     }
   }
@@ -31,11 +31,16 @@ export async function verifyStacAssets(env: CatalogEnv, model: StacPublicationIn
   const urlIssues = new Map<string, string>()
   const byUrl = new Map<string, VerifiedUrl | null>()
   const deadline = AbortSignal.timeout(15000)
+  let budgetExhausted = false
   for (const ref of references) {
     const href = resolveHttpAssetUrl(env, ref.startsWith('url:') ? ref.slice(4) : ref)
     if (!href || !allowed(href)) { issues.set(ref, href ? 'asset_origin_untrusted' : 'asset_reference_unsupported'); continue }
     if (!byUrl.has(href)) {
-      if (byUrl.size >= 40 || deadline.aborted) { issues.set(ref, 'asset_probe_budget_exceeded'); continue }
+      if (byUrl.size >= 40 || deadline.aborted) {
+        budgetExhausted = true
+        issues.set(ref, 'asset_probe_budget_exceeded')
+        continue
+      }
       let result: VerifiedUrl | null = null
       try {
         const response = await fetch(href, { method: 'HEAD', redirect: 'manual', credentials: 'omit',
@@ -45,6 +50,11 @@ export async function verifyStacAssets(env: CatalogEnv, model: StacPublicationIn
         else urlIssues.set(href, response.ok ? 'asset_content_type_missing' : `asset_http_${response.status}`)
         await response.body?.cancel()
       } catch { result = null; urlIssues.set(href, 'asset_probe_failed') }
+      if (deadline.aborted) {
+        budgetExhausted = true
+        result = null
+        urlIssues.set(href, 'asset_probe_budget_exceeded')
+      }
       byUrl.set(href, result)
     }
     const result = byUrl.get(href)
@@ -52,5 +62,5 @@ export async function verifyStacAssets(env: CatalogEnv, model: StacPublicationIn
       ...(ref.startsWith('r2:') && model.node ? { hostedBy: model.node.identity.node_id } : {}) })
     else issues.set(ref, urlIssues.get(href) ?? 'asset_probe_failed')
   }
-  return { assets: verified, issues }
+  return { assets: verified, issues, budgetExhausted }
 }
