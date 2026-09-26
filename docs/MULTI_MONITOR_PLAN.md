@@ -6124,6 +6124,102 @@ output must not paint night lights, specular ocean, clouds, or
 a day/night terminator, and a bbox-clipped overlay must not
 reveal a base Earth underneath.
 
+### Projector warp import (rung 16)
+
+**Planned with rung 16; nothing here can run until it lands.**
+These carry a `W` prefix for the reason the S steps do. Every
+one targets a failure that still produces a plausible picture —
+a way the warp can be wrong while the sphere shows a globe. The
+maths underneath is the pure module's unit tests; do not re-test
+it here. These steps need a sphere.
+
+Pre-flight: the site's own sphere-sim export (the Boulder
+preset's bundle is fine for checking that a bundle loads, and
+wrong on any rig but Boulder's); the projector heads spanned
+into one display at the OS level, per the runbook; the output's
+debug HUD on.
+
+**W1. One monitor, one output.** The Outputs panel lists the
+spanned display as a single monitor at the full framebuffer
+size — 3840×2160 for four 1920×1080 projectors. Add a `sos-warp`
+output there and import the bundle. The row lists one mesh per
+projector with its id, quadrant and grid size, P1 bottom-left
+through P4 top-right. **Failure signature:** four monitors
+listed instead of one. The heads are not spanned at the OS
+level, and this rung cannot place a window across them. A
+quadrant whose aspect differs from its mesh's must be flagged
+here too, rather than stretched in silence.
+
+**W2. Quadrant placement.** Turn on the calibration pattern.
+The graticule runs continuously across every seam, the equator
+is one unbroken line, and the prime meridian sits where the
+site's calibration put it. **Failure signature:** one
+projector's quarter of the graticule on the wrong part of the
+sphere, or upside down — a mesh filed under the wrong quadrant,
+or a viewport flipped in `y`. It is still plainly a graticule,
+which is why this step exists.
+
+**W3. The texture seam.** With the pattern on, find the
+antimeridian anchor. The mesh cells around it render the
+graticule like any other region. **Failure signature:** a band
+one mesh cell wide holding a squeezed, backwards copy of the
+whole map — `u` not unwrapped across the seam.
+
+**W4. Overlap brightness.** Put up a flat mid-grey and look
+along each seam in a darkened room. The overlaps match the
+single-projector regions on either side. **Failure signature:**
+a dark band along every seam, near 44% brightness — the blend
+applied to display-space values instead of in linear light. A
+faint band either way is γ not matching the projectors; adjust
+the output's γ and look again.
+
+**W5. No double rotation.** On import the rotation offset reads
+0, labelled as a trim. The prime meridian sits where sphere-sim
+placed it. Set the trim to 90°: the whole picture turns by 90°,
+continuously across the seams. Set it back. **Failure
+signature:** the meridian displaced by the rig's own rotation at
+import — sphere-sim's rotation applied a second time. On a rig
+whose rotation is 0° this passes vacuously; say so in the log.
+
+**W6. Zoom and split through the warp.** Pattern on, Track
+operator camera on. Zoom the control globe in on (0°, 0°): the
+centre crosshair grows on the sphere, the antipode compresses,
+and the scale is continuous across every seam. Then toggle
+split: the (0°, 0°) crosshair appears twice, 180° apart on the
+physical sphere. **Failure signature:** the zoom's scale jumping
+at a seam, which one window drawing every quadrant from one set
+of uniforms should make impossible.
+
+**W7. Motion across a seam.** Play a moving video dataset —
+clouds, or an SST animation — and watch one seam for a minute.
+**Failure signature:** doubled or ghosted features along the
+seam: two quadrants showing different frames. With one window
+this should be impossible; if it appears, the geometry is not
+being drawn in the single pass rung 16 specifies.
+
+**W8. The silhouette edge.** With the pattern on, look at each
+projector's silhouette edge. A stair-step up to one mesh cell
+deep — about 48 px on a 1920-wide raster at 41×41 — is expected
+where the edge carries blend weight. This step sets
+expectations rather than catching a fault: if the stair-step is
+objectionable, re-export from sphere-sim at a finer `cols` /
+`rows`. It is not a terraviz fix.
+
+**W9. Restore, a missing warp, and a downgrade.** (a) Quit and
+relaunch with restore on: the `sos-warp` output comes back on
+its monitor with its meshes and its trim, and the pattern off.
+(b) Corrupt that output's entry in
+`localStorage['sos-multi-output-warps']`: the output spawns,
+draws nothing into the projector rasters, and says the warp is
+missing on both the HUD and the panel row, while every other
+output restores untouched. (c) Launch a build without rung 16
+against the same config: it declines to spawn the `sos-warp`
+output rather than restoring it as `sos-equirect`. **Failure
+signature:** an unwarped equirect across the projectors at any
+point in this step. (b) is also worth a manager-level test,
+since what it asserts — one bad warp costs one output — needs
+no sphere.
+
 ### Cross-platform parity
 
 46. Repeat steps 4–18 (basic happy path) on a Windows
