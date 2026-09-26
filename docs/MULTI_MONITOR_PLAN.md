@@ -3249,12 +3249,21 @@ own number, and that caller has never existed.
 > at exactly half the width because an equirectangular frame that is not
 > 2:1 is not equirectangular; a slice mode brings its own rungs, matched
 > to a projector's native resolution, rather than widening these (see
-> §"Not every monitor is 2:1" and smoke step 24a). **And the four
-> projectors are four outputs, not one.** Each needs its own geometry
+> §"Not every monitor is 2:1" and smoke step 24a). ~~**And the four
+> projectors are four outputs, not one.**~~ Each needs its own geometry
 > payload — position on the sphere, lens warp, edge-blend zones — which
 > is per-output configuration the manager already spawns and persists
 > per output; what does not exist is the payload's schema or the
 > calibration UI that produces it. Rung 14 is where that starts.
+>
+> **Superseded by rung 16 (2026-09-26).** The four projectors are *one*
+> output carrying four meshes. The struck sentence was inferred from
+> the shape rungs 9-10 built; sphere-sim's PARAMETERS.md §3.4 — the
+> source this chapter cites — gives SOS as one framebuffer split 2×2,
+> and four windows would put their drift on the seams. Each projector
+> still needs its own payload, as above, but as a viewport and a mesh
+> inside one output's configuration; a Bourke mesh carries position,
+> lens warp and blend in one file. The payload's schema is rung 16's.
 
 `OutputMode` being a one-value union makes "widen the enum" look like
 the whole extension story. For the flat case below, it is. For
@@ -3276,7 +3285,12 @@ working unchanged:
   putting a plain equirect on a projector that was calibrated for a
   warp;
 - the mesh stays out of `localStorage`, per the typed-array finding
-  below — the persisted config holds a path, not a blob.
+  below — the persisted config holds a path, not a blob. *Narrowed by
+  rung 16* to the subject it was written about: sphere-sim's 5–40 MB
+  **surface** mesh. A Bourke **warp** mesh is ~80 KB of text, and a
+  path to one is something a webview can neither learn nor later read,
+  so rung 16 keeps an app-owned copy under its own `localStorage` key
+  and the persisted config holds a reference to that copy.
 
 **`MirroredView` was mode-specific without saying so, and is now a
 union keyed on `OutputMode` — and the shared view is mode-free.**
@@ -3426,9 +3440,18 @@ already meet at the frame v1 produces.**
 
 Consuming one is small: parse the text format, build a cols×rows mesh
 (positions from `x,y`, UVs from `u,v`, intensity as a vertex attribute),
-draw it with the equirect frame as texture, skip nodes written
-`-1 -1 -1`. terraviz never models the projector, so the miss-branch
+~~draw it with the equirect frame as texture, skip nodes written
+`-1 -1 -1`~~. terraviz never models the projector, so the miss-branch
 problem above does not arise — the trace happened offline.
+
+**Superseded by rung 16 — two corrections and an understatement.**
+There is no texture: the ray-march runs per fragment at the mesh's
+interpolated `u,v`, which saves a pass, a render target and a second
+resample. And what gets dropped is every *triangle* touching a
+`-1 -1 -1` node — a node cannot be skipped on its own, only the cells
+it anchors. "Small" also hid three conventions that fail silently: the
+texture seam, a blend weight in linear light, and a rotation already
+baked into the mesh. All three are measured there.
 
 The layering also composes: `cameraOffset` and `split` act on the
 equirect **content**, the warp acts on the rig **geometry**. Orthogonal,
@@ -3441,13 +3464,21 @@ get wrong:**
    single shared `framebuffer`, and each projector holds a *normalized
    viewport rect* into it — "SOS drives all projectors from one X screen
    split 2x2. Origin is bottom-left". Rungs 9-10 built the opposite:
-   N independent fullscreen windows. Both are legitimate and ours is
+   N independent fullscreen windows. ~~Both are legitimate and ours is
    arguably better on a modern OS, but a calibration file is expressed
    in theirs, so consuming one means mapping viewport rects onto
-   windows. Getting it wrong silently mis-crops every projector — a
+   windows.~~ Getting it wrong silently mis-crops every projector — a
    failure that reads as "calibration is slightly off" rather than "we
    misread the file". And bottom-left origin against our top-left is one
    sign from a vertically mirrored rig.
+
+   **Superseded by rung 16.** For projected SOS theirs is the better
+   shape, not merely a legitimate one: it is what keeps the projectors
+   from drifting apart at the seams. So the rects are placed *inside
+   one window*, not onto several — and in GL clip space, whose origin
+   is bottom-left too. The sign hazard is real in screen and canvas
+   coordinates, which is where sphere-sim's emitter meets it, and does
+   not arise in clip space.
 2. **An arbitrary surface arrives as a binary sidecar, not more JSON.**
    `packages/calibration/src/mesh.ts` (`sphere-sim/surface-mesh@1`) sits
    *beside* the sphere field rather than replacing it, and is
@@ -3891,17 +3922,30 @@ other display geometries" and repeated here because this is where they
 would bite:
 
 - A calibration describes **one shared framebuffer with normalized
-  per-projector viewport rects, bottom-left origin**. Rungs 9-10 spawn
+  per-projector viewport rects, bottom-left origin**. ~~Rungs 9-10 spawn
   N independent windows. Mapping between the two is small and silent
   when wrong — every projector mis-cropped, reading as a calibration
-  error rather than a parsing one.
+  error rather than a parsing one.~~ **Superseded by rung 16:** the
+  rects are placed inside *one* output rather than mapped onto N
+  windows. A projector mis-cropped or filed under the wrong quadrant is
+  still the silent hazard, which is why its import refuses a projector
+  id it cannot place.
 - An arbitrary **surface mesh is a typed-array sidecar**, not JSON.
   Rung 10's persisted config lives in `localStorage`; a 5 MB mesh does
-  not go there. A rig config needs a file reference.
+  not go there. A rig config needs a file reference. This is about
+  surface meshes only — a Bourke warp is ~80 KB of text, and rung 16
+  keeps an app-owned copy.
 
 The honest gate remains real-world demand, but the *shape* of the work
 has changed from "build a projector driver" to "consume an interchange
 format and get two coordinate conventions right".
+
+**Gate met for the sphere, 2026-09-26.** The operator who owns the
+deployment asked for sphere-sim's warps on a real output, so this
+phase's sphere half is rung 16. Specifying it changed the shape once
+more: one output carrying every mesh rather than N windows, and three
+conventions that fail silently rather than two coordinate ones. Domes
+and video walls remain gated.
 
 ### Phase 4 — mirrored / cloned mode
 
