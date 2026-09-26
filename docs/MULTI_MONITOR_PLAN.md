@@ -3084,7 +3084,7 @@ without rolling the whole feature back.
 | 13 | `multi-output: failure recovery — crashes, stalls, GPU loss, monitor unplug` | Manager gains crash detection (no-graceful-close window destroy → toast + record removal), 3-strikes-per-monitor crash storm guard, 2 s `availableMonitors()` poll for unplug detection, `getAll()` boot scan to reattach orphaned `output-*` windows after a control-window **page reload or webview failure** — not a crash of the process, which takes every window with it; see case 6, which corrects this. Output gains `webglcontextlost` / `webglcontextrestored` listeners with full scene rebuild, IPC-silence watchdog (5 s → stale state, 60 s → orphan), one HLS stream rebuild on a `loadStream()` rejection with frozen last-good-frame (no retry ladder — `hlsService` already spends a 3× budget before rejecting). Outputs panel renders per-output health badges (healthy / stale / stalled / monitor-missing). New Tier A `output_failure` event fired from manager via `analytics/emitter.ts` with `{ kind, retries, recovered }` (Open Question 3 decided). See §3 "Failure recovery". **Landed so far: 13a** (crash-vs-hand-close classification, the storm guard, record removal, `onOutputsChanged` for the panel), **13b** (all three Tier A events, `outputTelemetry.ts`), **case 3** (the output's `linkWatchdog`, the manager's `output_health_check` resync, the panel's stale badge and its announcement) and **case 6** (`adoptOrphanedOutputs`, `OUTPUT_REATTACH_EVENT`, chained ahead of the restore at boot) and **case 5's detection and reporting** (`outputScene.gpuState()`, `output_gpu_lost` / `output_gpu_recovered`, the `gpu-lost` badge and the `gpu-loss` Tier A failure — much smaller than this row implied, because Three's `WebGLRenderer` already does the `preventDefault()` and the GL rebuild; see case 5). Still open: the unplug poll, the single HLS rebuild, case 5's 30 s no-restore timeout and its `gpu-loss-timeout` removal, the toast (no toast primitive exists), and the `perf_sample` extension (needs an `OutputEvent` arm carrying drift — see Open Question 3). | Yes (additive) |
 | 14 | `multi-output: calibration tooling — test pattern + rotation offset` | `src/output/datasetMirror.ts` recognises the `__terraviz_calibration__` sentinel id and renders a procedural test pattern (8-step grayscale ramp at the equator, RGB color bars at lat ±30°, lat/lon graticule with color-coded equator + prime meridian, named anchor crosshairs, N/S pole labels, live resolution counter — ~80 LOC GLSL). `src/output/equirectRtt.ts` adds the `uRotationOffsetRad` longitude rotation applied before the camera-offset ray-march. `outputUI.ts` adds the per-output "Rotation offset (°)" numeric + slider and a "Calibration" submenu. Persisted config gains `rotationOffsetDeg`. See §3 "Calibration tooling". **Landed, in two slices, and the second is built differently from this row.** **14a** is the rotation offset end to end: `uRotationOffsetRad` and its TS mirror, `rotationOffsetDeg` through `OutputViewSettings` and the persisted config, the degrees→radians conversion in `projectView`, and the panel's slider-plus-number. **14b** is the test pattern, as `src/output/calibrationPattern.ts` — a **2:1 canvas installed in an ordinary overlay slot**, not the ~80 LOC of GLSL this row specifies, and a **per-output switch on the render-config channel**, not the `__terraviz_calibration__` sentinel dataset. Both departures are argued at the top of §3 "Calibration tooling": a shader pattern would bypass the very sampling path it is meant to prove, and a sentinel dataset would put the pattern on every output at once — plus on the control window's own globe, which is where the operator is reading the rotation they are turning. There is no "Calibration submenu"; it is one toggle sitting directly above the rotation control it is used with. The pattern is the one operator choice in the panel that deliberately does **not** persist. | Yes (additive) |
 | 15 | `multi-output: operator runbook` | **Landed** — [`docs/MULTI_MONITOR_OPERATIONS.md`](MULTI_MONITOR_OPERATIONS.md), the deployment half this plan had deferred, and which a spike showed is not optional. It covers everything below and four things the ladder could not have predicted, all of them from hardware and all of them **silent** failures: the **gpu** field being unreadable on Linux (so §1.1's check moves outside the app, on the platform SOS installations most often run), the output monitor's **refresh rate** as a hard ceiling on its frame rate with a dock as the usual cause, and two Linux package prerequisites — GStreamer codecs, without which no HLS dataset plays, and fonts in two classes, without which every control renders as an empty box. Originally scoped as: Covers: **checking which GPU the webview actually got** (the renderer string surfaced by commit 11's debug overlay) and the per-OS override for a hybrid-graphics machine, since the app's own `powerPreference` is inert and a silent landing on the iGPU is undiagnosable from logs; **measuring this machine's decoder budget** rather than trusting a constant, and entering it in the Outputs panel's budget field (commit 11); disabling screen savers and display sleep (Open Question 5's documented half); the kiosk autostart entry from §3.6; and what each Outputs-panel health badge means in front of an audience. No code. | **Yes** (docs) |
-| 16 | `multi-output: projector warp import (sos-warp)` | **Planned, not built** — specified in §"Rung 16 — a sphere-sim warp bundle on one output", which opens roadmap Phase 3's sphere half now that its demand gate is met. One output on the spanned display carries a sphere-sim bundle's Bourke meshes, each placed in its `projectorInfo(viewport)` quadrant and drawn in one pass, so the projectors share one decoder and one swap and cannot drift apart at the seams. A new `sos-warp` mode rather than a flag, so a build without this rung refuses to spawn one instead of throwing an unwarped equirect across calibrated projectors. The ray-march runs per fragment at the mesh's interpolated `(u, v)` — no render target, no second resample. Three conventions that fail silently were measured against sphere-sim's own export and are specified there: the texture seam, a linear-light blend weight arriving at a display-space renderer, and a rig rotation already baked into the mesh. Nothing blocks it upstream; two requests to sphere-sim would make it safer — [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49) (the layout in the bundle) and [zyra-project/sphere-sim#50](https://github.com/zyra-project/sphere-sim/issues/50) (the blend convention stated in `warp.ts`). | Yes (additive) |
+| 16 | `multi-output: projector-warp mode (sphere-sim warp import)` | **Planned, not built** — specified in §"Rung 16 — a sphere-sim warp bundle on one output", which opens roadmap Phase 3's sphere half now that its demand gate is met. One output on the spanned display carries a sphere-sim bundle's Bourke meshes, each placed in its viewport of the one framebuffer and drawn in one pass, so the projectors share one decoder and one swap and cannot drift apart at the seams. A new `projector-warp` mode rather than a flag, so a build without this rung refuses to spawn one instead of throwing an unwarped equirect across calibrated projectors. The ray-march runs per fragment at the mesh's interpolated `(u, v)` — no render target, no second resample. Three conventions that fail silently were measured against sphere-sim's own export and are specified there: the texture seam, a linear-light blend weight arriving at a display-space renderer, and a rig rotation already baked into the mesh. Nothing blocks it upstream; two requests to sphere-sim would make it safer — [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49) (the layout in the bundle) and [zyra-project/sphere-sim#50](https://github.com/zyra-project/sphere-sim/issues/50) (the blend convention stated in `warp.ts`). | Yes (additive) |
 
 **Backout plan.** Reverting commit 9 leaves all the plumbing in
 place (manager, output bundle, capability) but removes the
@@ -3558,7 +3558,7 @@ blend makes both images visible at once. Two windows each steered
 independently towards the control window's playhead can sit a frame
 apart — a doubled coastline along every seam — and a camera drag
 reaches them in two separate IPC deliveries, so the seams tear while
-the operator moves. One window draws all four quadrants in one pass
+the operator moves. One window draws every viewport in one pass
 from one set of uniforms, off one decoder, and holds one slot of rung
 11c's budget rather than four.
 
@@ -3630,13 +3630,21 @@ test.
 
 #### A new mode, not a render-config flag
 
-`sos-warp` joins `OutputMode`. This is the chapter's own "mode plus an
-optional geometry reference" shape, adopted for the reason given there:
-rung 10's parse refuses a `mode` it does not recognise, so a build
-without this rung **declines to spawn** a warped output instead of
-throwing a plain equirect across four projectors calibrated for a warp.
-A render-config flag would restore as `sos-equirect` on that build and
-look as though it had worked.
+`projector-warp` joins `OutputMode`. It is named for what it does, not
+for SOS, because an SOS sphere is one rig among the several sphere-sim
+now calibrates — any count of projectors, placed anywhere, on a sphere
+or a mesh. `sos-equirect` keeps its name: it is a persisted string, and
+renaming it would reset every operator's saved outputs to buy nothing.
+The `sos-` prefix on the storage key below is the app's own key
+namespace (`sos-docent-config`, `sos-telemetry-config`), not a claim
+about the rig.
+
+This is the chapter's own "mode plus an optional geometry reference"
+shape, adopted for the reason given there: rung 10's parse refuses a
+`mode` it does not recognise, so a build without this rung **declines
+to spawn** a warped output instead of throwing a plain equirect across
+projectors calibrated for a warp. A render-config flag would restore as
+`sos-equirect` on that build and look as though it had worked.
 
 Its `MirroredView` arm carries the same parameters as `sos-equirect`'s,
 **`split` included**. Split is SOS's own option for mirroring the area
@@ -3652,7 +3660,7 @@ The mesh set rides the **render-config channel**: per window,
 last-write-wins, sent before the first snapshot on `output_ready`,
 never in the 1 Hz heartbeat. A health-check resync resends it, so the
 output compares a content hash and rebuilds geometry only on a change.
-A `sos-warp` output holding no set draws nothing into the projector
+A `projector-warp` output holding no set draws nothing into the projector
 rasters and says why, on the HUD and in the panel row. An unwarped
 image across four projectors is worse than black, and black with a
 stated reason is not the silent kind.
@@ -3759,7 +3767,7 @@ itself as a parsing mistake.
 - **The raster must be the shape the mesh was solved for.** The file's
   `x` span states it: ±1.778 is 16:9. A 3840×2160 screen gives
   1920×1080 quadrants and agrees. A 4096×2160 one gives 2048×1080, where
-  a mesh solved for 16:9 still fills the quadrant and the picture is
+  a mesh solved for 16:9 still fills its viewport and the picture is
   quietly stretched by 7%. The panel warns on a mismatch rather than
   refusing, since the operator may know the lens compensates.
 
@@ -3805,9 +3813,9 @@ would change no byte of output. It moves a fact from `blend.ts` into
 the file every consumer actually reads.
 
 **Cost:** about rung 14's. The pure warp module and the ZIP reader; the
-`sos-warp` arm through protocol, aggregator and persistence; the
+`projector-warp` arm through protocol, aggregator and persistence; the
 render-config field; the manager's import and warp store; the scene's
-geometry swap, native sizing and blend; the panel's import, quadrant
+geometry swap, native sizing and blend; the panel's import, viewport
 diagram, γ field and clear control; locale strings, CLAUDE.md rows,
 Appendix B's W steps, and the runbook section on spanning.
 
@@ -3931,7 +3939,7 @@ would bite:
   when wrong — every projector mis-cropped, reading as a calibration
   error rather than a parsing one.~~ **Superseded by rung 16:** the
   rects are placed inside *one* output rather than mapped onto N
-  windows. A projector mis-cropped or filed under the wrong quadrant is
+  windows. A projector mis-cropped or filed under the wrong viewport is
   still the silent hazard, which is why its import refuses a projector
   id it cannot place.
 - An arbitrary **surface mesh is a typed-array sidecar**, not JSON.
@@ -6145,21 +6153,21 @@ debug HUD on.
 
 **W1. One monitor, one output.** The Outputs panel lists the
 spanned display as a single monitor at the full framebuffer
-size — 3840×2160 for four 1920×1080 projectors. Add a `sos-warp`
+size — 3840×2160 for four 1920×1080 projectors. Add a `projector-warp`
 output there and import the bundle. The row lists one mesh per
-projector with its id, quadrant and grid size, P1 bottom-left
+projector with its id, viewport and grid size, P1 bottom-left
 through P4 top-right. **Failure signature:** four monitors
 listed instead of one. The heads are not spanned at the OS
 level, and this rung cannot place a window across them. A
-quadrant whose aspect differs from its mesh's must be flagged
+viewport whose aspect differs from its mesh's must be flagged
 here too, rather than stretched in silence.
 
-**W2. Quadrant placement.** Turn on the calibration pattern.
+**W2. Viewport placement.** Turn on the calibration pattern.
 The graticule runs continuously across every seam, the equator
 is one unbroken line, and the prime meridian sits where the
 site's calibration put it. **Failure signature:** one
 projector's quarter of the graticule on the wrong part of the
-sphere, or upside down — a mesh filed under the wrong quadrant,
+sphere, or upside down — a mesh filed under the wrong viewport,
 or a viewport flipped in `y`. It is still plainly a graticule,
 which is why this step exists.
 
@@ -6191,13 +6199,13 @@ centre crosshair grows on the sphere, the antipode compresses,
 and the scale is continuous across every seam. Then toggle
 split: the (0°, 0°) crosshair appears twice, 180° apart on the
 physical sphere. **Failure signature:** the zoom's scale jumping
-at a seam, which one window drawing every quadrant from one set
+at a seam, which one window drawing every viewport from one set
 of uniforms should make impossible.
 
 **W7. Motion across a seam.** Play a moving video dataset —
 clouds, or an SST animation — and watch one seam for a minute.
 **Failure signature:** doubled or ghosted features along the
-seam: two quadrants showing different frames. With one window
+seam: two viewports showing different frames. With one window
 this should be impossible; if it appears, the geometry is not
 being drawn in the single pass rung 16 specifies.
 
@@ -6210,14 +6218,14 @@ objectionable, re-export from sphere-sim at a finer `cols` /
 `rows`. It is not a terraviz fix.
 
 **W9. Restore, a missing warp, and a downgrade.** (a) Quit and
-relaunch with restore on: the `sos-warp` output comes back on
+relaunch with restore on: the `projector-warp` output comes back on
 its monitor with its meshes and its trim, and the pattern off.
 (b) Corrupt that output's entry in
 `localStorage['sos-multi-output-warps']`: the output spawns,
 draws nothing into the projector rasters, and says the warp is
 missing on both the HUD and the panel row, while every other
 output restores untouched. (c) Launch a build without rung 16
-against the same config: it declines to spawn the `sos-warp`
+against the same config: it declines to spawn the `projector-warp`
 output rather than restoring it as `sos-equirect`. **Failure
 signature:** an unwarped equirect across the projectors at any
 point in this step. (b) is also worth a manager-level test,
