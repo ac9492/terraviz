@@ -3084,7 +3084,7 @@ without rolling the whole feature back.
 | 13 | `multi-output: failure recovery — crashes, stalls, GPU loss, monitor unplug` | Manager gains crash detection (no-graceful-close window destroy → toast + record removal), 3-strikes-per-monitor crash storm guard, 2 s `availableMonitors()` poll for unplug detection, `getAll()` boot scan to reattach orphaned `output-*` windows after a control-window **page reload or webview failure** — not a crash of the process, which takes every window with it; see case 6, which corrects this. Output gains `webglcontextlost` / `webglcontextrestored` listeners with full scene rebuild, IPC-silence watchdog (5 s → stale state, 60 s → orphan), one HLS stream rebuild on a `loadStream()` rejection with frozen last-good-frame (no retry ladder — `hlsService` already spends a 3× budget before rejecting). Outputs panel renders per-output health badges (healthy / stale / stalled / monitor-missing). New Tier A `output_failure` event fired from manager via `analytics/emitter.ts` with `{ kind, retries, recovered }` (Open Question 3 decided). See §3 "Failure recovery". **Landed so far: 13a** (crash-vs-hand-close classification, the storm guard, record removal, `onOutputsChanged` for the panel), **13b** (all three Tier A events, `outputTelemetry.ts`), **case 3** (the output's `linkWatchdog`, the manager's `output_health_check` resync, the panel's stale badge and its announcement) and **case 6** (`adoptOrphanedOutputs`, `OUTPUT_REATTACH_EVENT`, chained ahead of the restore at boot) and **case 5's detection and reporting** (`outputScene.gpuState()`, `output_gpu_lost` / `output_gpu_recovered`, the `gpu-lost` badge and the `gpu-loss` Tier A failure — much smaller than this row implied, because Three's `WebGLRenderer` already does the `preventDefault()` and the GL rebuild; see case 5). Still open: the unplug poll, the single HLS rebuild, case 5's 30 s no-restore timeout and its `gpu-loss-timeout` removal, the toast (no toast primitive exists), and the `perf_sample` extension (needs an `OutputEvent` arm carrying drift — see Open Question 3). | Yes (additive) |
 | 14 | `multi-output: calibration tooling — test pattern + rotation offset` | `src/output/datasetMirror.ts` recognises the `__terraviz_calibration__` sentinel id and renders a procedural test pattern (8-step grayscale ramp at the equator, RGB color bars at lat ±30°, lat/lon graticule with color-coded equator + prime meridian, named anchor crosshairs, N/S pole labels, live resolution counter — ~80 LOC GLSL). `src/output/equirectRtt.ts` adds the `uRotationOffsetRad` longitude rotation applied before the camera-offset ray-march. `outputUI.ts` adds the per-output "Rotation offset (°)" numeric + slider and a "Calibration" submenu. Persisted config gains `rotationOffsetDeg`. See §3 "Calibration tooling". **Landed, in two slices, and the second is built differently from this row.** **14a** is the rotation offset end to end: `uRotationOffsetRad` and its TS mirror, `rotationOffsetDeg` through `OutputViewSettings` and the persisted config, the degrees→radians conversion in `projectView`, and the panel's slider-plus-number. **14b** is the test pattern, as `src/output/calibrationPattern.ts` — a **2:1 canvas installed in an ordinary overlay slot**, not the ~80 LOC of GLSL this row specifies, and a **per-output switch on the render-config channel**, not the `__terraviz_calibration__` sentinel dataset. Both departures are argued at the top of §3 "Calibration tooling": a shader pattern would bypass the very sampling path it is meant to prove, and a sentinel dataset would put the pattern on every output at once — plus on the control window's own globe, which is where the operator is reading the rotation they are turning. There is no "Calibration submenu"; it is one toggle sitting directly above the rotation control it is used with. The pattern is the one operator choice in the panel that deliberately does **not** persist. | Yes (additive) |
 | 15 | `multi-output: operator runbook` | **Landed** — [`docs/MULTI_MONITOR_OPERATIONS.md`](MULTI_MONITOR_OPERATIONS.md), the deployment half this plan had deferred, and which a spike showed is not optional. It covers everything below and four things the ladder could not have predicted, all of them from hardware and all of them **silent** failures: the **gpu** field being unreadable on Linux (so §1.1's check moves outside the app, on the platform SOS installations most often run), the output monitor's **refresh rate** as a hard ceiling on its frame rate with a dock as the usual cause, and two Linux package prerequisites — GStreamer codecs, without which no HLS dataset plays, and fonts in two classes, without which every control renders as an empty box. Originally scoped as: Covers: **checking which GPU the webview actually got** (the renderer string surfaced by commit 11's debug overlay) and the per-OS override for a hybrid-graphics machine, since the app's own `powerPreference` is inert and a silent landing on the iGPU is undiagnosable from logs; **measuring this machine's decoder budget** rather than trusting a constant, and entering it in the Outputs panel's budget field (commit 11); disabling screen savers and display sleep (Open Question 5's documented half); the kiosk autostart entry from §3.6; and what each Outputs-panel health badge means in front of an audience. No code. | **Yes** (docs) |
-| 16 | `multi-output: projector-warp mode (sphere-sim warp import)` | **Planned, not built** — specified in §"Rung 16 — a sphere-sim warp bundle on one output", which opens roadmap Phase 3's sphere half now that its demand gate is met. One output on the spanned display carries a sphere-sim bundle's Bourke meshes, each placed in its viewport of the one framebuffer and drawn in one pass, so the projectors share one decoder and one swap and cannot drift apart at the seams. A new `projector-warp` mode rather than a flag, so a build without this rung refuses to spawn one instead of throwing an unwarped equirect across calibrated projectors. The ray-march runs per fragment at the mesh's interpolated `(u, v)` — no render target, no second resample. Three conventions that fail silently were measured against sphere-sim's own export and are specified there: the texture seam, a linear-light blend weight arriving at a display-space renderer, and a rig rotation already baked into the mesh. Nothing blocks it upstream; two requests to sphere-sim would make it safer — [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49) (the layout in the bundle) and [zyra-project/sphere-sim#50](https://github.com/zyra-project/sphere-sim/issues/50) (the blend convention stated in `warp.ts`). | Yes (additive) |
+| 16 | `multi-output: projector-warp mode (sphere-sim warp import)` | **Planned, not built** — specified in §"Rung 16 — a sphere-sim warp bundle on one output", which opens roadmap Phase 3's sphere half now that its demand gate is met. One output on the spanned display carries a sphere-sim bundle's Bourke meshes, each placed in its viewport of the one framebuffer and drawn in one pass, so the projectors share one decoder and one swap and cannot drift apart at the seams. A new `projector-warp` mode rather than a flag, so a build without this rung refuses to spawn one instead of throwing an unwarped equirect across calibrated projectors. The ray-march runs per fragment at the mesh's interpolated `(u, v)` — no render target, no second resample. Three conventions that fail silently were measured against sphere-sim's own export and are specified there: the texture seam, a linear-light blend weight arriving at a display-space renderer, and a rig rotation already baked into the mesh. A mesh is never placed by its projector id alone, because sphere-sim's placed rigs reuse SOS's ids in other places: the layout comes from the bundle, or from the operator explicitly choosing SOS's quadrants, or the import refuses. So an SOS rig is unblocked upstream and any other rig needs [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49) (the layout in the bundle); [zyra-project/sphere-sim#50](https://github.com/zyra-project/sphere-sim/issues/50) (the blend convention stated in `warp.ts`) makes every rig safer. | Yes (additive) |
 
 **Backout plan.** Reverting commit 9 leaves all the plumbing in
 place (manager, output bundle, capability) but removes the
@@ -3530,10 +3530,11 @@ point here.
 sphere-sim's export is one ZIP: `warp/<id>.data`, one Bourke type-2
 mesh per lit projector; `alignment/<id>.alignment`, the same
 correction squeezed into SOS's nine-point format; the patched
-`local_sos_config.json`; and a README. Only the first concerns this
-rung. The alignment files are lossy by sphere-sim's own account — no
-blend column, nine control points — and describe a residual against
-SOS's renderer rather than a content map.
+`local_sos_config.json`, only when the operator loaded one to patch;
+and a README. Only the first concerns this rung. The alignment files
+are lossy by sphere-sim's own account — no blend column, nine control
+points — and describe a residual against SOS's renderer rather than a
+content map.
 
 A mesh is `2`, then `cols rows`, then one `x y u v i` line per node,
 row-major. `x` spans ±the projector's aspect and `y` spans ±1, y up;
@@ -3560,7 +3561,15 @@ apart — a doubled coastline along every seam — and a camera drag
 reaches them in two separate IPC deliveries, so the seams tear while
 the operator moves. One window draws every viewport in one pass
 from one set of uniforms, off one decoder, and holds one slot of rung
-11c's budget rather than four.
+11c's budget rather than one per projector.
+
+None of this is particular to SOS. sphere-sim's generalization to
+placed rigs of any count kept the single framebuffer on purpose —
+`gridViewports` is documented with "six projectors on a wall are still
+driven from one framebuffer, just one split six ways instead of four" —
+so an arbitrary rig arrives in the same shape, with its viewports
+packed differently. What does not generalize is knowing *where* each
+mesh goes, which §"Prerequisites" takes up.
 
 So the unit is **one output on the spanned display, carrying the set**.
 This supersedes the hardware-session note above that "the four
@@ -3680,8 +3689,11 @@ that leaves the building after the import.
 So each mesh's **original text** is kept, with its id, viewport and
 source filename, under its own `localStorage` key, and re-parsed on
 restore by the same fail-closed parser that accepted it: one parser,
-one set of refusals. About 320 KB for four at 41×41 — the largest
-thing the app keeps there, well inside WebKitGTK's quota. It gets its
+one set of refusals. About 80 KB per projector at 41×41, so 320 KB for
+SOS's four — the largest thing the app keeps there. A webview's
+per-origin quota is a few megabytes, and a finer export of a
+many-projector rig can reach it, so the write is checked and a set
+that does not fit is refused whole rather than kept in part. It gets its
 own key for two reasons: the main config is rewritten on every toggle
 and should not carry the meshes each time, and a corrupt mesh should
 cost that output its warp, not every output its config.
@@ -3693,10 +3705,11 @@ interface PersistedOutput { /* … */ warpId?: string; blendGamma?: number }
 // localStorage['sos-multi-output-warps']
 interface PersistedWarpStore {
   version: 1
-  sets: Record<string, {  // keyed by content hash
+  sets: Record<string, {  // keyed by a hash of meshes and placement
     importedAt: string
+    layoutFrom: 'bundle' | 'sos-quadrants'  // never inferred from an id
     meshes: {
-      id: string          // 'P1' … from the filename
+      id: string          // from the filename, warp/<id>.data
       viewport: { x: number; y: number; w: number; h: number } // bottom-left
       sourceName: string
       text: string        // the file as imported
@@ -3750,26 +3763,43 @@ itself as a parsing mistake.
 
 #### Prerequisites, one of them upstream
 
-- **The bundle carries no layout.** `bundle.ts` does not write
-  `projectorInfo(viewport)`; the placement lives in SOS's operations
-  config and pairs with a mesh only through the projector id in its
-  filename. Until sphere-sim writes it, the import applies SOS's
-  documented default by id, P1–P4, and **refuses** an id it cannot
-  place rather than guessing. sphere-sim's own emitter calls a quadrant
-  filed under the wrong projector "the expensive one", because nothing
-  on the sphere reveals it. **Upstream:**
-  [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49).
-- **The four heads must enumerate as one monitor** — NVIDIA Mosaic, AMD
-  Eyefinity, or `xrandr --setmonitor`. An output fullscreens onto
+- **The bundle carries no layout, and a filename cannot supply one.**
+  `bundle.ts` does not write the viewports, so a mesh pairs with its
+  place in the framebuffer only through the projector id in its
+  filename — and an id does not determine a place. `nominalRig` names
+  a projector after its SOS slot, so `P3` is the top-left quadrant
+  whether the rig has four projectors or two. `placedRig` names them
+  `P1` to `Pn` in placement order and lays them out with
+  `gridViewports`, whose column count is the caller's: four placed
+  projectors in one row carry SOS's four ids and none of SOS's places.
+  Its defaults diverge too. Two placed projectors split the framebuffer
+  into halves, so `P2` is the right half at full height, and a lone
+  placed `P1` is the whole framebuffer where a lone nominal `P1` is a
+  quadrant. So the import **never places a mesh by its id alone**. It
+  uses the layout the bundle states, which sphere-sim does not write
+  yet — [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49),
+  a **prerequisite for any rig that is not SOS's quadrants**. Without
+  one, the panel offers SOS's quadrants as an explicit choice, diagram
+  and all, and refuses the bundle if the operator declines or it holds
+  an id the quadrants cannot place. There is no silent default.
+  sphere-sim's emitter calls a viewport in the wrong place silent and
+  "the expensive one", because the picture still looks right and every
+  frame is filed under the wrong projector. The raster-shape check
+  below is a partial backstop: it compares shapes, so it catches a
+  layout of the wrong shape and never a right-shaped one with two
+  projectors swapped.
+- **The projector heads must enumerate as one monitor** — NVIDIA
+  Mosaic, AMD Eyefinity, or `xrandr --setmonitor`. An output fullscreens onto
   exactly one monitor, and this rung does not place a window across
   several. A span placement is a follow-up only if a site cannot span
   at the OS level; spanning is a runbook section when this lands.
 - **The raster must be the shape the mesh was solved for.** The file's
-  `x` span states it: ±1.778 is 16:9. A 3840×2160 screen gives
-  1920×1080 quadrants and agrees. A 4096×2160 one gives 2048×1080, where
-  a mesh solved for 16:9 still fills its viewport and the picture is
-  quietly stretched by 7%. The panel warns on a mismatch rather than
-  refusing, since the operator may know the lens compensates.
+  `x` span states it: ±1.778 is 16:9. On SOS's quadrants a 3840×2160
+  screen gives 1920×1080 viewports and agrees. A 4096×2160 one gives
+  2048×1080, where a mesh solved for 16:9 still fills its viewport and
+  the picture is quietly stretched by 7%. The panel warns on a mismatch
+  rather than refusing, since the operator may know the lens
+  compensates.
 
 #### What the operator will see
 
@@ -3806,7 +3836,8 @@ the fixture is Appendix B's W steps, on a sphere.
 
 **Upstream requests**, filed on sphere-sim 2026-09-26:
 [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49)
-asks for the viewport layout in the bundle, and
+asks for the viewport layout in the bundle — a prerequisite for any
+rig that is not SOS's quadrants, and a safeguard for one that is — and
 [zyra-project/sphere-sim#50](https://github.com/zyra-project/sphere-sim/issues/50)
 for `warp.ts` to state that `i` is a linear-light weight. The second
 would change no byte of output. It moves a fact from `blend.ts` into
@@ -3940,8 +3971,8 @@ would bite:
   error rather than a parsing one.~~ **Superseded by rung 16:** the
   rects are placed inside *one* output rather than mapped onto N
   windows. A projector mis-cropped or filed under the wrong viewport is
-  still the silent hazard, which is why its import refuses a projector
-  id it cannot place.
+  still the silent hazard, which is why its import never places a mesh
+  by its id alone — a placed rig reuses SOS's ids in other places.
 - An arbitrary **surface mesh is a typed-array sidecar**, not JSON.
   Rung 10's persisted config lives in `localStorage`; a 5 MB mesh does
   not go there. A rig config needs a file reference. This is about
@@ -6153,23 +6184,38 @@ debug HUD on.
 
 **W1. One monitor, one output.** The Outputs panel lists the
 spanned display as a single monitor at the full framebuffer
-size — 3840×2160 for four 1920×1080 projectors. Add a `projector-warp`
-output there and import the bundle. The row lists one mesh per
-projector with its id, viewport and grid size, P1 bottom-left
-through P4 top-right. **Failure signature:** four monitors
+size — 3840×2160 for SOS's four 1920×1080 projectors. Add a
+`projector-warp` output there and import the bundle. The row
+lists one mesh per projector with its id, viewport and grid
+size, and says where the placement came from: the bundle's own
+layout, or SOS's quadrants chosen at import, P1 bottom-left
+through P4 top-right. **Failure signature:** several monitors
 listed instead of one. The heads are not spanned at the OS
 level, and this rung cannot place a window across them. A
 viewport whose aspect differs from its mesh's must be flagged
 here too, rather than stretched in silence.
 
-**W2. Viewport placement.** Turn on the calibration pattern.
-The graticule runs continuously across every seam, the equator
-is one unbroken line, and the prime meridian sits where the
-site's calibration put it. **Failure signature:** one
-projector's quarter of the graticule on the wrong part of the
+**W2. Viewport placement.** (a) Turn on the calibration
+pattern. The graticule runs continuously across every seam, the
+equator is one unbroken line, and the prime meridian sits where
+the site's calibration put it. **Failure signature:** one
+projector's share of the graticule on the wrong part of the
 sphere, or upside down — a mesh filed under the wrong viewport,
 or a viewport flipped in `y`. It is still plainly a graticule,
-which is why this step exists.
+which is why this step exists. (b) **A rig that is not SOS's
+quadrants** — this half needs no sphere. Import a bundle
+sphere-sim exported for a placed rig of two projectors. With no
+layout in it, the import asks: SOS's quadrants are offered with
+nothing pre-selected, and declining refuses the bundle. Once
+sphere-sim writes the layout
+([zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49)),
+the same bundle imports without asking and the diagram shows
+two halves side by side at full height. **Failure signature:**
+the bundle placed without a question, or with the quadrants
+pre-selected — the silent id default this rung exists not to
+have. Two projectors are the case to use because both ids are
+ones the quadrants *can* place, so nothing but the rule catches
+it.
 
 **W3. The texture seam.** With the pattern on, find the
 antimeridian anchor. The mesh cells around it render the
