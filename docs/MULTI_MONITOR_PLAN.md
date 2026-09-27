@@ -3658,12 +3658,24 @@ through the warp like any dataset. The check §"The risk to design
 around" asks for, judging the warp before the globe is in it, needs
 nothing new.
 
-The drawing buffer becomes the **window's native resolution**. The 2:1
-ladder is `sos-equirect`'s, as the hardware note already says, so the
-picker is hidden in this mode. A 3840×2160 spanned display is about the
-pixel count of today's 4096×2048 frame, and on Boulder only 620 of each
-mesh's 1,600 cells reach the sphere, so the fragment shader runs on
-well under half the pixels it does now.
+The drawing buffer becomes the **window's native resolution**, and that
+takes a sizing path of its own, not a hidden picker:
+`resolveFramebufferSize` snaps every request onto the 2:1 ladder, so no
+`framebufferWidth` can produce 3840×2160. In this mode the scene sizes
+the buffer from its own canvas — client size times `devicePixelRatio`,
+tracked with a `ResizeObserver` — and `framebufferWidth` is neither read
+nor persisted. Nothing crosses the wire and nothing is replayed on
+boot, because a fullscreen window's own size *is* its monitor's.
+Reading it from the window rather than from the manager also means a
+boot that races the spawn sequence's `setFullscreen` corrects itself on
+the first resize instead of rendering at a stale size. The ladder and
+its picker stay `sos-equirect`'s, as the hardware note already says.
+
+A 3840×2160 spanned display is about the pixel count of today's
+4096×2048 frame. A mesh's cells are equal in raster space, so on
+Boulder, where only 620 of each mesh's 1,600 cells reach the sphere,
+the fragment shader runs on 39% of each raster — well under half the
+pixels it does now.
 
 The geometry build is a **pure module**, and nearly all of this rung's
 correctness lives in it:
@@ -3701,6 +3713,16 @@ to spawn** a warped output instead of throwing a plain equirect across
 projectors calibrated for a warp. A render-config flag would restore as
 `sos-equirect` on that build and look as though it had worked.
 
+**The window learns its mode from its spawn URL**,
+`output/output.html?mode=projector-warp`, and from nowhere else. Today
+`OUTPUT_MODE` is a constant precisely so that an output never adopts
+its geometry from the wire: one that did could never disagree with it,
+and the mismatch check would be vacuous. The URL keeps that property.
+The mode is fixed before the window hears anything, so a view arm for
+the other geometry is still a mismatch it can see. A URL with no mode
+is `sos-equirect`, which is every window a build before this rung
+spawns.
+
 Its `MirroredView` arm carries the same parameters as `sos-equirect`'s,
 **`split` included**. Split is SOS's own option for mirroring the area
 of focus onto the opposite hemisphere (§"LED sphere zoom + split"), and
@@ -3733,34 +3755,41 @@ not grant; and a calibration commonly arrives on a laptop or USB stick
 that leaves the building after the import.
 
 So each mesh's **original text** is kept, with its id, viewport and
-source filename, under its own `localStorage` key, and re-parsed on
-restore by the same fail-closed parser that accepted it: one parser,
-one set of refusals. About 80 KB per projector at 41×41, so 320 KB for
-SOS's four — the largest thing the app keeps there. A webview's
-per-origin quota is a few megabytes, and a finer export of a
-many-projector rig can reach it, so the write is checked and a set
-that does not fit is refused whole rather than kept in part. It gets its
-own key for two reasons: the main config is rewritten on every toggle
-and should not carry the meshes each time, and a corrupt mesh should
-cost that output its warp, not every output its config.
+source filename, and re-parsed on restore by the same fail-closed
+parser that accepted it: one parser, one set of refusals. A set lives
+under **a key of its own**, `sos-multi-output-warp:<warpId>`, where
+the id is a hash of its meshes and their placement. About 80 KB per
+projector at 41×41, so 320 KB for SOS's four — the largest thing the
+app keeps there. A webview's per-origin quota is a few megabytes, and a
+finer export of a many-projector rig can reach it, so the write is
+checked and a set that does not fit is refused whole rather than kept
+in part.
+
+One key per set, and none shared with the main config, for three
+reasons. The main config is rewritten on every toggle and should not
+carry the meshes each time. A corrupt set then costs the outputs that
+use it their warp and nothing else, because no parse ever reads two
+sets at once — which a single shared value would make impossible,
+since one bad byte in it fails the parse of every set. And replacing a
+set is one `setItem`, so a write cut short cannot leave half a set or
+damage another. A set no output references any more is deleted with
+the last reference.
 
 ```ts
 // Sketch. The persisted output gains a reference, never the blob.
 interface PersistedOutput { /* … */ warpId?: string; blendGamma?: number }
 
-// localStorage['sos-multi-output-warps']
-interface PersistedWarpStore {
+// localStorage['sos-multi-output-warp:' + warpId] — one key per set
+interface PersistedWarpSet {
   version: 1
-  sets: Record<string, {  // keyed by a hash of meshes and placement
-    importedAt: string
-    layoutFrom: 'bundle' | 'sos-quadrants'  // never inferred from an id
-    meshes: {
-      id: string          // from the filename, warp/<id>.data
-      viewport: { x: number; y: number; w: number; h: number } // bottom-left
-      sourceName: string
-      text: string        // the file as imported
-    }[]
-  }>
+  importedAt: string
+  layoutFrom: 'bundle' | 'sos-quadrants'  // never inferred from an id
+  meshes: {
+    id: string          // from the filename, warp/<id>.data
+    viewport: { x: number; y: number; w: number; h: number } // bottom-left
+    sourceName: string
+    text: string        // the file as imported
+  }[]
 }
 ```
 
@@ -3844,6 +3873,9 @@ itself as a parsing mistake.
    multiply, encode — with γ a per-output field, default 2.2 and
    persisted, because sphere-sim classes its photometry PROVISIONAL and
    its own notes leave open which job SOS's blend gamma of 0.8 does.
+   It is per output rather than per projector because one rig's
+   projectors are normally one model; a rig that mixes models needs
+   per-projector colour matching, a non-goal below.
 3. **Double rotation.** On the sphere, nominal or placed, sphere-sim
    bakes the rig's mechanical rotation into `u`
    (`worldLonToTextureLon`); on a mesh it bakes none, because the
@@ -3858,13 +3890,15 @@ itself as a parsing mistake.
    leaves it alone, since it is the operator's choice rather than the
    rig's. The warp's own rotation is shown beside it, read-only — the
    operator needs both numbers to know which one turned the picture.
-   A Bourke file has nowhere to state it, so it belongs in the
-   manifest [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49)
-   proposes: the baked `rotationOffsetDeg` for a sphere rig, and an
-   explicit none for a mesh. Until a bundle says, the panel says the
-   warp's rotation is unknown. The Boulder preset's rotation is 0,
-   which is exactly why a fixture made from it cannot catch this: the
-   test needs a rig with a non-zero one.
+   A Bourke file has nowhere to state it, and the manifest
+   [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49)
+   proposes does not carry it as filed. A follow-up comment there
+   (2026-09-27) requests it as an addition: the baked
+   `rotationOffsetDeg` for a sphere rig, and an explicit none for a
+   mesh. Until a bundle states it — and so for every bundle today —
+   the panel shows the warp's rotation as unknown. The Boulder
+   preset's rotation is 0, which is exactly why a fixture made from it
+   cannot catch this: the test needs a rig with a non-zero one.
 
 #### Prerequisites, one of them upstream
 
@@ -3957,19 +3991,20 @@ rig that is not SOS's quadrants, and a safeguard for one that is — and
 for `warp.ts` to state that `i` is a linear-light weight. The second
 would change no byte of output. It moves a fact from `blend.ts` into
 the file every consumer actually reads. The first was filed before two
-findings above and wants a follow-up comment: it still describes the
-default by id that this rung has since dropped, and its manifest
-should also carry the warp's baked rotation (convention 3).
+findings above, and a follow-up comment on it (2026-09-27) withdraws
+the default by id it describes and requests the warp's baked rotation
+as an addition to its manifest (convention 3).
 
 **Cost:** about rung 14's. The pure warp module and the ZIP reader; the
 `projector-warp` arm through protocol, aggregator and persistence; the
-render-config field; the manager's import and warp store; the scene's
-geometry swap, direction prologue, native sizing and blend; the HUD's
-count of dropped triangles; the panel's import, layout question,
-viewport diagram, γ field, rotation labels and clear control; locale
-strings, CLAUDE.md rows, Appendix B's W steps, and the runbook section
-on spanning. The fetch's own seam is not in it: that fix is
-`sos-equirect`'s as much as this mode's, and lands first on its own.
+render-config field; the mode on the spawn URL; the manager's import
+and per-set warp keys; the scene's geometry swap, direction prologue,
+native sizing and blend; the HUD's count of dropped triangles; the
+panel's import, layout question, viewport diagram, γ field, rotation
+labels and clear control; locale strings, CLAUDE.md rows, Appendix B's
+W steps, and the runbook section on spanning. The fetch's own seam is
+not in it: that fix is `sos-equirect`'s as much as this mode's, and
+lands first on its own.
 
 ---
 
@@ -6362,9 +6397,13 @@ that interpolates `(u, v)` and either smears those triangles or
 drops them. On a site with only an SOS rig, record this half as
 not run rather than passed.
 
-**W4. Overlap brightness.** Put up a flat mid-grey and look
-along each seam in a darkened room. The overlaps match the
-single-projector regions on either side. **Failure signature:**
+**W4. Overlap brightness.** The flat grey comes from the
+calibration pattern: its grayscale ramp runs round the equator
+in eight flat steps, 45° of longitude each, so every seam
+crosses it. In a darkened room, use the content rotation to
+bring a mid-grey step onto each seam in turn. Within the step,
+the overlap matches the single-projector regions on either
+side. **Failure signature:**
 a dark band along every seam, near 44% brightness — the blend
 applied to display-space values instead of in linear light. A
 faint band either way is γ not matching the projectors; adjust
@@ -6372,17 +6411,18 @@ the output's γ and look again.
 
 **W5. No double rotation.** On a new `projector-warp` output the
 rotation reads 0, labelled as a content rotation, with the
-warp's own rotation beside it — the bundle's figure, or
-"unknown" when the bundle states none. The prime meridian sits
-where sphere-sim placed it. Set the content rotation to 90°: the
-whole picture turns by 90°, continuously across the seams.
-Re-import the same bundle and it is still 90°. Set it back.
-**Failure signature:** the meridian displaced by the rig's own
-rotation at import — sphere-sim's rotation applied a second
-time, by an import that seeded the content rotation from the
-rig — or the operator's rotation reset by a re-import. On a rig
-whose rotation is 0°, and on any mesh surface, the first of
-those passes vacuously; say so in the log.
+warp's own rotation beside it: "unknown" for every bundle
+until #49's manifest carries the rotation, which the follow-up
+there requests, and the bundle's figure after that. The prime
+meridian sits where sphere-sim placed it. Set the content
+rotation to 90°: the whole picture turns by 90°, continuously
+across the seams. Re-import the same bundle and it is still 90°.
+Set it back. **Failure signature:** the meridian displaced by
+the rig's own rotation at import — sphere-sim's rotation applied
+a second time, by an import that seeded the content rotation
+from the rig — or the operator's rotation reset by a re-import.
+On a rig whose rotation is 0°, and on any mesh surface, the
+first of those passes vacuously; say so in the log.
 
 **W6. Zoom and split through the warp.** Pattern on, Track
 operator camera on. Zoom the control globe in on (0°, 0°): the
@@ -6414,17 +6454,17 @@ objectionable, re-export from sphere-sim at a finer `cols` /
 **W9. Restore, a missing warp, and a downgrade.** (a) Quit and
 relaunch with restore on: the `projector-warp` output comes back on
 its monitor with its meshes and its content rotation, and the
-pattern off. (b) Corrupt that output's entry in
-`localStorage['sos-multi-output-warps']`: the output spawns,
-draws nothing into the projector rasters, and says the warp is
-missing on both the HUD and the panel row, while every other
-output restores untouched. (c) Launch a build without rung 16
-against the same config: it declines to spawn the `projector-warp`
-output rather than restoring it as `sos-equirect`. **Failure
-signature:** an unwarped equirect across the projectors at any
-point in this step. (b) is also worth a manager-level test,
-since what it asserts — one bad warp costs one output — needs
-no sphere.
+pattern off. (b) Corrupt that output's set,
+`localStorage['sos-multi-output-warp:<warpId>']`: the output
+spawns, draws nothing into the projector rasters, and says the
+warp is missing on both the HUD and the panel row, while every
+output not using that set restores untouched. (c) Launch a
+build without rung 16 against the same config: it declines to
+spawn the `projector-warp` output rather than restoring it as
+`sos-equirect`. **Failure signature:** an unwarped equirect
+across the projectors at any point in this step. (b) is also
+worth a manager-level test, since what it asserts — one bad
+warp costs one output — needs no sphere.
 
 ### Cross-platform parity
 
