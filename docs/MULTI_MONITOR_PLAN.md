@@ -3661,9 +3661,9 @@ nothing new.
 The drawing buffer becomes the **window's native resolution**. The 2:1
 ladder is `sos-equirect`'s, as the hardware note already says, so the
 picker is hidden in this mode. A 3840×2160 spanned display is about the
-pixel count of today's 4096×2048 frame, and only 620 of each mesh's
-1,600 cells reach the sphere, so the fragment shader runs on well under
-half the pixels it does now.
+pixel count of today's 4096×2048 frame, and on Boulder only 620 of each
+mesh's 1,600 cells reach the sphere, so the fragment shader runs on
+well under half the pixels it does now.
 
 The geometry build is a **pure module**, and nearly all of this rung's
 correctness lives in it:
@@ -3929,10 +3929,9 @@ which only content authored for it can fill — a different job, as
 §"Which surfaces" records. Surfaces are not otherwise a non-goal: a
 dome or an ellipsoid unwrapped equirectangularly is in scope and needs
 nothing the sphere does not. Per-projector colour and black-level
-matching.
-Authoring or editing a warp in terraviz, which is sphere-sim's job.
-Placing one window across several monitors. SOS's nine-point alignment
-files.
+matching. Authoring or editing a warp in terraviz, which is
+sphere-sim's job. Placing one window across several monitors. SOS's
+nine-point alignment files.
 
 #### Verification, and what cannot be verified here
 
@@ -6300,7 +6299,9 @@ These carry a `W` prefix for the reason the S steps do. Every
 one targets a failure that still produces a plausible picture —
 a way the warp can be wrong while the sphere shows a globe. The
 maths underneath is the pure module's unit tests; do not re-test
-it here. These steps need a sphere.
+it here. These steps need the calibrated rig — a sphere, or
+whatever surface the site's warps were solved for — except
+where a step says it does not.
 
 Pre-flight: the site's own sphere-sim export (the Boulder
 preset's bundle is fine for checking that a bundle loads, and
@@ -6413,8 +6414,7 @@ objectionable, re-export from sphere-sim at a finer `cols` /
 **W9. Restore, a missing warp, and a downgrade.** (a) Quit and
 relaunch with restore on: the `projector-warp` output comes back on
 its monitor with its meshes and its content rotation, and the
-pattern off.
-(b) Corrupt that output's entry in
+pattern off. (b) Corrupt that output's entry in
 `localStorage['sos-multi-output-warps']`: the output spawns,
 draws nothing into the projector rasters, and says the warp is
 missing on both the HUD and the panel row, while every other
