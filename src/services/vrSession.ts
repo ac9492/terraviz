@@ -938,7 +938,11 @@ export async function enterImmersive(mode: VrMode, ctx: VrSessionContext): Promi
       })
     }, 250)
   }
-  scene.setTexture(ctx.getDatasetTexture(), finishLoading)
+  // Only a live texture ends the wait; a failed video leaves the
+  // fallback below to dismiss the splash.
+  scene.setTexture(ctx.getDatasetTexture(), (readiness) => {
+    if (readiness.ok) finishLoading()
+  })
 
   // Safety net. Readiness normally arrives from the texture path above,
   // but when it never does — a video dataset that cannot decode in AR, an
