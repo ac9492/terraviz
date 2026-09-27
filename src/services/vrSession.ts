@@ -858,8 +858,10 @@ export async function enterImmersive(mode: VrMode, ctx: VrSessionContext): Promi
 
   // --- Loading scene ---
   // Visible from the moment the session starts until the dataset
-  // texture has a decoded frame on the globe. Hides the real globe
-  // + HUD initially so the user sees a clean transition.
+  // texture has a decoded frame on the globe — or, failing that, until
+  // the video reports an error or the fallback in vrLoadingHandover
+  // gives up waiting. Hides the real globe + HUD initially so the user
+  // sees a clean transition.
   const loading = createVrLoading(THREE_)
   scene.scene.add(loading.group)
   scene.globe.visible = false
