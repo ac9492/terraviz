@@ -3852,13 +3852,26 @@ itself as a parsing mistake.
    the texture's average colour along the content's dateline. Video
    escapes it, since Three builds a `VideoTexture` without mipmaps; the
    Earth, the clouds, image datasets and the calibration pattern do
-   not, because `new Texture()` defaults to trilinear. This is read off
-   the shader and Three's defaults, not seen, and it is **latent in
-   `sos-equirect` already**. With the camera centred the dateline sits
-   on the frame's edge, where no quad straddles it, but tracking the
-   operator moves it inside: zoomed fully towards (0°, 90°E) it runs
-   about 40° in from the frame's edge on the equator. A warp makes it
-   permanent wherever a raster covers the dateline — P3, on Boulder.
+   not, because `new Texture()` defaults to trilinear. It is **latent
+   in `sos-equirect` already**. With the camera centred the dateline
+   sits on the frame's edge, where no quad straddles it, but tracking
+   the operator moves it inside: zoomed fully towards (0°, 90°E) it
+   runs about 40° in from the frame's edge on the equator. A warp makes
+   it permanent wherever a raster covers the dateline — P3, on Boulder.
+
+   **Reproduced in `sos-equirect`, 2026-09-27**, with the real
+   `outputScene` in headless Chromium and its network loaders stubbed.
+   The layer was an image, white within 36° of the dateline and black
+   elsewhere. With the camera centred, no pixel in the white band was
+   wrong. Zoomed fully towards (0°, 90°E), 501 were, across 251 rows,
+   every one within 1% of the dateline and each reading 51 — the whole
+   texture's average, which is its smallest mip. The idle Earth showed
+   the same 501; a video layer carrying the same picture showed none.
+   The line is dashed rather than continuous, because it appears only
+   in rows where the jump falls inside a quad. SwiftShader drew it, a
+   software renderer, but choosing a level from quad derivatives is
+   what every GPU does, so hardware should agree; that is still to be
+   seen.
    The fix is a few lines in the fetch: take the level from whichever
    of `u` and `fract(u + ½)` is continuous at that pixel (Tarini's
    method) and sample with explicit gradients. It belongs in its own
@@ -6385,9 +6398,10 @@ graticule like any other region, and the anchor's own colour
 runs through the join unbroken. **Failure signature:** a band
 one mesh cell wide holding a squeezed, backwards copy of the
 whole map — texels interpolated across the seam instead of
-directions — or a hairline of flat colour along the anchor,
-which is the fetch choosing its mip level across the `atan`
-jump. (b) **A pole in view.** An SOS rig never has one, so this
+directions — or a dashed hairline of flat colour along the
+anchor, which is the fetch choosing its mip level across the
+`atan` jump (reproduced off-hardware; see convention 1). (b)
+**A pole in view.** An SOS rig never has one, so this
 half needs a rig that does: a dome's zenith, or a placed
 projector aimed high. Pattern on, find the pole: the parallels
 close into rings round it and the meridians converge on one
