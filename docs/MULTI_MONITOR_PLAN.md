@@ -3876,6 +3876,28 @@ itself as a parsing mistake.
    of `u` and `fract(u + ½)` is continuous at that pixel (Tarini's
    method) and sample with explicit gradients. It belongs in its own
    commit ahead of this rung, since it is not the warp's.
+
+   **Fixed, 2026-09-27**, in `layerStack`'s `EQUIRECT_GRADIENT_GLSL`:
+   gradients taken once, right after `sphereUv`, and every fetch of an
+   equirect texture samples with them. The same headless harness now
+   reads 0 wrong pixels in every case it measured, idle Earth and image
+   layer included. That is SwiftShader's word, as the reproduction was;
+   smoke steps 41 and 43 now carry the check on a GPU. A warp's
+   direction prologue inherits the fix, provided the gradients are
+   still taken from the recovered `sphereUv` before any branch.
+
+   **Wider than described above, found the same day.** The dateline
+   does not need camera tracking to enter the frame: the shader
+   subtracts the rotation offset from the longitude, so any offset
+   puts it on a column of a centred frame. The same harness, camera
+   centred and rotated 90.13°, drew a solid line two pixels wide down
+   all 614 rows it checked, on the idle Earth and the image layer
+   alike. At exactly 90° it drew nothing, because the jump then falls
+   between 2×2 quads rather than inside one — as it does for every
+   multiple of 45° at every width on the ladder, which is why smoke
+   steps 43 and 44, at 90° and 45°, could not have caught it. About
+   half of the panel's 0.1° slider positions do show it, so a drag
+   makes it blink. The same fix clears both: 0 wrong pixels.
 2. **Blend gamma.** sphere-sim's weight multiplies radiance **in linear
    light** and is encoded afterwards (its conventions.ts §B, clause 4,
    restated in `blend.ts`). This scene writes display-space values —
@@ -4016,8 +4038,8 @@ native sizing and blend; the HUD's count of dropped triangles; the
 panel's import, layout question, viewport diagram, γ field, rotation
 labels and clear control; locale strings, CLAUDE.md rows, Appendix B's
 W steps, and the runbook section on spanning. The fetch's own seam is
-not in it: that fix is `sos-equirect`'s as much as this mode's, and
-lands first on its own.
+not in it: that fix is `sos-equirect`'s as much as this mode's, and it
+has already landed on its own.
 
 ---
 
@@ -6249,7 +6271,15 @@ telemetry event fires (visible in the console batch when
     fills more of the LED-sphere mock; the antipodal "
     180,0" crosshair compresses on the other side. Confirms
     that camera tracking applies to the pattern just like
-    a regular dataset.
+    a regular dataset. Then zoom in at lon=90°E/lat=0
+    instead: the antimeridian, which the lon=0 zoom leaves
+    on the frame's edge, now runs through the frame, and
+    its anchor line should be unbroken. **Failure
+    signature:** a dashed line of one flat colour along it,
+    the pattern's average — the fetch choosing its mip
+    level across the `atan` jump. Reproduced and fixed
+    off-hardware on 2026-09-27 (rung 16, convention 1), so
+    seeing it on a GPU means the fix does not hold there.
 42. **Pattern + split.** Toggle Split Sphere ON. The
     crosshair at (0,0) appears twice on the equirect
     (U=0.25 and U=0.75), confirming split mode applies.
@@ -6258,7 +6288,16 @@ telemetry event fires (visible in the console batch when
     line) shifts 90° westward on the LED-sphere mock —
     the line that previously sat at U=0.5 now sits at
     U=0.25. Confirms the longitudinal rotation is applied
-    correctly. Reset to 0°.
+    correctly. Then drag the slider slowly through a few
+    degrees either side of 90°: the antimeridian anchor
+    moves with it and stays unbroken. **Failure
+    signature:** a line of one flat colour down the whole
+    frame at the antimeridian that blinks on and off
+    through the drag — the fetch choosing its mip level
+    across the `atan` jump. 90° itself hides it, since
+    every multiple of 45° puts the jump between 2×2 quads;
+    reproduced and fixed off-hardware on 2026-09-27 (rung
+    16, convention 1). Reset to 0°.
 44. **Rotation offset persistence.** Set offset to 45°,
     quit, relaunch with auto-restore on. Output spawns
     with offset already at 45°; pattern reflects it
@@ -6400,7 +6439,8 @@ one mesh cell wide holding a squeezed, backwards copy of the
 whole map — texels interpolated across the seam instead of
 directions — or a dashed hairline of flat colour along the
 anchor, which is the fetch choosing its mip level across the
-`atan` jump (reproduced off-hardware; see convention 1). (b)
+`atan` jump (reproduced and fixed off-hardware; see
+convention 1). (b)
 **A pole in view.** An SOS rig never has one, so this
 half needs a rig that does: a dome's zenith, or a placed
 projector aimed high. Pattern on, find the pole: the parallels
