@@ -114,6 +114,34 @@ export function historyInsertStatements(db: D1Database, publication: StacHistory
   return statements
 }
 
+export function linkHistoryRevisions(products: StacProduct[], history: StacHistoryPublication[]): void {
+  const items = new Map(products.flatMap(product => product.item ? [[product.item.id, product.item] as const] : []))
+  const groups = new Map<string, StacHistoryPublication[]>()
+  for (const publication of history) {
+    if (publication.kind !== 'revision' || publication.items.length !== 1) continue
+    const group = groups.get(publication.dataset_id) ?? []
+    group.push(publication)
+    groups.set(publication.dataset_id, group)
+  }
+  for (const group of groups.values()) {
+    group.sort((first, second) => Date.parse(first.captured_at) - Date.parse(second.captured_at))
+    const times = group.map(publication => Date.parse(publication.captured_at))
+    if (times.some(time => !Number.isFinite(time)) || new Set(times).size !== times.length) continue
+    const versions = group.map(publication => items.get(`${publication.dataset_id}-revision-${publication.items[0].id}`))
+    for (let index = 0; index < versions.length; index++) {
+      const item = versions[index]
+      if (!item) continue
+      const targets = [['predecessor-version', versions[index - 1]], ['successor-version', versions[index + 1]],
+        ['latest-version', versions.at(-1)]] as const
+      for (const [rel, target] of targets) {
+        if (!target || target.id === item.id) continue
+        const self = target.links.find(link => link.rel === 'self')
+        if (self) item.links.push({ rel, href: self.href, type: 'application/geo+json' })
+      }
+    }
+  }
+}
+
 export function mergeHistoryCollections(products: StacProduct[]): void {
   const groups = new Map<string, StacProduct[]>()
   for (const product of products) {

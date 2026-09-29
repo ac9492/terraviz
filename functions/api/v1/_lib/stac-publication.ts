@@ -8,7 +8,7 @@ import { readStacPublicationInput } from './stac-publication-store'
 import { verifyStacAssets } from './stac-assets'
 import { computeEtag } from './snapshot'
 import type { StacCatalog } from './stac-types'
-import { historyModels, mergeHistoryCollections } from './stac-history'
+import { historyModels, linkHistoryRevisions, mergeHistoryCollections } from './stac-history'
 
 export interface StacPublication {
   catalog: StacCatalog
@@ -49,7 +49,7 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
   if (!model.node) throw new Error('Missing node identity')
   const branding = model.branding
   if (branding) model.node.publicOrgName = branding.org_name
-  const seed = JSON.stringify({ version: 5, operatorReport: options.operatorReport === true, model, r2: env.R2_PUBLIC_BASE ?? null, origins: env.STAC_ASSET_ORIGINS ?? null })
+  const seed = JSON.stringify({ version: 6, operatorReport: options.operatorReport === true, model, r2: env.R2_PUBLIC_BASE ?? null, origins: env.STAC_ASSET_ORIGINS ?? null })
   const key = `stac:publication:v1:${(await computeEtag(seed)).replace(/"/g, '')}`
   if (env.CATALOG_KV && !options.operatorReport) {
     try {
@@ -81,6 +81,7 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
     if (result.ok) products.push(result.value)
   }
   mergeHistoryCollections(products)
+  linkHistoryRevisions(products, model.history)
   const roots = [...new Map(products.map(product => [product.collection?.id ?? product.item!.id, product])).values()]
   const catalog = buildStacCatalog(model.node, resolvers, roots)
   if (!catalog.ok) throw new Error(`Invalid STAC catalog: ${catalog.reasons.join(',')}`)

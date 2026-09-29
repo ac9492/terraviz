@@ -62,3 +62,17 @@ the saved identity; a new upload or changed metadata creates a new revision.
 No history is inferred from old workflow-run logs. Operators must retain the
 upload-specific bundles and content-addressed assets for historical Items to
 remain reachable. The existing reachability and count-budget checks still apply.
+
+## Step 3: Revision Links
+
+Workflow revisions of the same dataset expose `predecessor-version`,
+`successor-version`, and `latest-version` links using their persisted capture
+times, not represented scientific time. Equal or invalid capture timestamps
+leave the chain unlinked rather than inventing an order. Frames are not versions
+of their neighbors. Links target only Items included in the current public
+projection; an unavailable immediate neighbor is not silently skipped.
+
+These registered link relations do not claim the STAC Versioning extension.
+Links are a live projection and can change as revisions arrive, while the saved
+metadata and primary asset remain immutable. History is a cache dependency, so
+new revisions update prior Items' ETags and links without changing their IDs.

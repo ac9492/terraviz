@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { stacRouteFixture } from './stac-test-helpers'
-import { historyInsertStatements, historyModels, prepareFrameHistory, prepareWorkflowHistory, type StacHistoryPublication } from './stac-history'
+import { historyInsertStatements, historyModels, linkHistoryRevisions, prepareFrameHistory, prepareWorkflowHistory, type StacHistoryPublication } from './stac-history'
 import { readStacPublicationInput } from './stac-publication-store'
 import { publishDataset } from './dataset-mutations'
 import { readStacPublication } from './stac-publication'
@@ -104,7 +104,21 @@ describe('immutable STAC history', () => {
       expect((await publishDataset(configured, ids[0])).ok).toBe(true)
       const later = await readStacPublication(configured)
       expect(later.products).toHaveLength(2)
-      expect(later.products.find(product => product.item!.id === first.products[0].item!.id)!.item).toEqual(first.products[0].item)
+      const oldItem = later.products.find(product => product.item!.id === first.products[0].item!.id)!.item!
+      expect({ ...oldItem, links: first.products[0].item!.links }).toEqual(first.products[0].item)
+      const newItem = later.products.find(product => product.item!.id !== oldItem.id)!.item!
+      expect(oldItem.links).toEqual(expect.arrayContaining([
+        expect.objectContaining({ rel: 'successor-version', href: newItem.links.find(link => link.rel === 'self')!.href }),
+        expect.objectContaining({ rel: 'latest-version', href: newItem.links.find(link => link.rel === 'self')!.href }),
+      ]))
+      expect(newItem.links).toContainEqual(expect.objectContaining({ rel: 'predecessor-version', href: oldItem.links.find(link => link.rel === 'self')!.href }))
+      const history = (await readStacPublicationInput(env.CATALOG_DB, true)).history
+      const unlinked = structuredClone(later.products)
+      for (const product of unlinked) product.item!.links = product.item!.links.filter(link => !link.rel.endsWith('-version'))
+      linkHistoryRevisions(unlinked, history.map(publication => ({ ...publication, captured_at: now })))
+      expect(unlinked.every(product => product.item!.links.every(link => !link.rel.endsWith('-version')))).toBe(true)
+      linkHistoryRevisions([unlinked[0]], history)
+      expect(unlinked[0].item!.links.every(link => !link.rel.endsWith('-version'))).toBe(true)
       const current = (await readStacPublicationInput(env.CATALOG_DB, true)).datasets[0].row
       expect(await prepareWorkflowHistory(configured, { ...current, data_ref: 'url:https://data.example/latest.mp4' }, now)).toBeNull()
       expect(await prepareWorkflowHistory(configured, { ...current, transcoding: 1 }, now)).toBeNull()
