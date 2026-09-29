@@ -7,6 +7,7 @@ import { until } from '../test-utils'
 import type { OutputMonitor, OutputRecord } from '../services/multiOutput/manager'
 import {
   defaultRenderConfig,
+  type OutputMode,
   type OutputRenderConfig,
 } from '../services/multiOutput/protocol'
 import {
@@ -72,13 +73,16 @@ function fakeManager(
       primary === undefined ? (monitors[0] ?? null) : primary,
     ),
     outputs: vi.fn(() => [...records]),
-    addOutput: vi.fn(async ({ monitorIndex }: { monitorIndex: number }) => {
+    addOutput: vi.fn(async ({ monitorIndex, mode }: { monitorIndex: number; mode?: OutputMode }) => {
       const target = monitors[monitorIndex]
       if (!target) throw new Error(`no monitor at index ${monitorIndex}`)
-      const rec = record(`output-${records.length + 1}`, target)
+      const rec = { ...record(`output-${records.length + 1}`, target), mode: mode ?? 'sos-equirect' }
       records.push(rec)
       return rec
     }),
+    readWarpFiles: vi.fn(async () => ({ ok: false as const, refusal: { code: 'nothing-picked' as const } })),
+    importWarpSet: vi.fn(async () => ({ ok: false as const, refusal: { code: 'no-output' as const } })),
+    clearOutputWarp: vi.fn(async () => {}),
     removeOutput: vi.fn(async (label: string) => {
       const i = records.findIndex(r => r.label === label)
       if (i >= 0) records.splice(i, 1)
@@ -240,6 +244,42 @@ describe('the Outputs panel', () => {
     // listener installed afterwards races the window it is for — and
     // loses silently, leaving an output that renders nothing.
     expect(order).toEqual(['start', 'addOutput'])
+  })
+
+  it('adds the kind of output the operator picked, which the window is spawned as', async () => {
+    const { mgr, raw } = fakeManager()
+    mount(mgr)
+    await until(painted, 'the panel body')
+    const modes = $$('.output-mode-select option').map(o => (o as HTMLOptionElement).value)
+    // An LED sphere by default: a projector rig draws nothing until it has
+    // a warp, so it must be the operator's choice rather than the fallback.
+    // The default names no mode — the manager's default is the geometry —
+    // which keeps `sos-equirect` out of the web entry chunk altogether.
+    expect(modes).toEqual(['', 'projector-warp'])
+    expect($<HTMLSelectElement>('.output-mode-select')!.value).toBe('')
+
+    $<HTMLSelectElement>('.output-mode-select')!.value = 'projector-warp'
+    $<HTMLButtonElement>('.output-add-btn')!.click()
+
+    await until(() => raw.addOutput.mock.calls.length === 1, 'the add')
+    expect(raw.addOutput).toHaveBeenCalledWith({ monitorIndex: 0, mode: 'projector-warp' })
+  })
+
+  it('gives a projector-warp row its warp controls in place of the framebuffer ladder', async () => {
+    const { mgr, records } = fakeManager()
+    records.push({ ...record('output-1', monitor({ size: { width: 3840, height: 2160 } })), mode: 'projector-warp' })
+    mount(mgr)
+    await until(() => $('.output-item') !== null, 'the row')
+
+    const row = $('.output-item')!
+    expect(row.querySelector('.output-item-meta')!.textContent).toContain('Projector warp')
+    // The buffer is the display's own pixels, so the ladder is not offered.
+    expect(row.querySelector('.output-field-select')).toBeNull()
+    expect(row.textContent).toContain("this display's own 3840×2160")
+    // The field turns the content; the rig's own rotation is in the warp.
+    expect(row.querySelector('label[for="output-rotation-output-1"]')!.textContent).toBe('Content rotation (°)')
+    expect(row.textContent).toContain('Warp rotation: unknown')
+    expect(row.querySelector('.output-warp')).not.toBeNull()
   })
 
   it('shows a new output and takes its display out of the picker', async () => {

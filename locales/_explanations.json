@@ -277,5 +277,18 @@
   "vr.loading.timedOut": "Status line on the in-VR loading screen when the dataset has not appeared after several seconds; the loading screen then fades out to a placeholder globe while loading continues in the background. Keep short — drawn into a fixed-size canvas under a progress bar.",
   "vr.zoomSlider.aria": "ARIA label for the in-AR vertical zoom slider on phones. Describes its function for screen readers; not visible text.",
   "vr.zoomSlider.label": "Visible label printed above the in-AR zoom slider on phones. Single short word — the column it sits in is narrow.",
-  "vr.zoomSlider.title": "Tooltip on the in-AR zoom slider when hovered with a pointer. Brief — appears as a native browser tooltip."
+  "vr.zoomSlider.title": "Tooltip on the in-AR zoom slider when hovered with a pointer. Brief — appears as a native browser tooltip.",
+  "outputs.mode.optionProjectorWarp": "Option in the Outputs panel's output-type picker. A projector rig is several video projectors lighting one physical sphere or dome; \"sphere-sim\" is the name of the calibration tool that produces the warp, and \"warp\" is its correction for where each projector's pixels land. Keep \"sphere-sim\" as is.",
+  "outputs.mode.optionSosEquirect": "Option in the Outputs panel's output-type picker, for a display that takes a single flat world map: an LED sphere, or a dome. \"Equirectangular\" is the map projection's technical name.",
+  "outputs.warp.aspectMismatch": "Warning before a warp is imported. {id} is a projector id such as \"P3\" (do not translate). {mesh} and {viewport} are width-to-height ratios such as \"1.778\"; keep the \":1\" after each. {percent} is a whole number.",
+  "outputs.warp.askQuadrants": "Question before a warp is imported. Science On a Sphere (SOS) drives its four projectors from one screen split into four quarters (\"quadrants\"); this asks whether to use that arrangement. Keep \"Science On a Sphere\".",
+  "outputs.warp.blendGamma": "Label for a number field. \"Blend\" is how overlapping projectors fade into each other; \"gamma\" is the display's brightness curve, a technical term usually left untranslated.",
+  "outputs.warp.contentRotation": "Label for a rotation control on a projector-rig output. It turns the picture shown on the sphere, not the projectors or the sphere. The unit is degrees.",
+  "outputs.warp.quadrantsKey": "Text beside a small diagram of the four screen quarters. P1–P4 are projector ids and must not be translated.",
+  "outputs.warp.refusal.archive": "Error when a chosen ZIP cannot be read. {file} is a file name. {reason} is a short technical code such as \"not-a-zip\" or \"zip64\", shown as is — do not translate it.",
+  "outputs.warp.refusal.mesh": "Error when a warp file is malformed. {file} is a file name. {reason} is a short technical code such as \"bad-node\", shown as is for the operator to look up — do not translate it.",
+  "outputs.warp.refusal.meshAtLine": "As outputs.warp.refusal.mesh, with {line} the line number in the file where the problem is.",
+  "outputs.warp.refusal.noMeshes": "Error for a ZIP with no warp files. \"warp/<id>.data\" is the literal path inside the archive — keep it exactly.",
+  "outputs.warp.refusal.set": "Error when a set of warp meshes is refused as a whole. {reason} is a short technical code such as \"overlap\", shown as is — do not translate it.",
+  "outputs.warp.warpRotationUnknown": "Read-only note beside the content-rotation control. The warp file already contains the sphere's own mechanical rotation, but does not say what it is, so the app cannot show it."
 }
