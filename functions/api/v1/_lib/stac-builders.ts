@@ -279,7 +279,7 @@ export function buildStacProduct(model: StacDatasetReadModel, node: StacNodeCont
     const temporal: StacTemporal = readiness.temporal.status === 'instant' ? { datetime: start } : { datetime: null, start_datetime: start, end_datetime: end }
     item = { type: 'Feature', stac_version: STAC_VERSION, stac_extensions: [], id: itemId, ...spatial,
       ...(collection ? { collection: collectionId } : {}),
-      properties: { ...common, ...temporal, ...(!collection ? { license } : {}) }, assets,
+      properties: { ...common, ...temporal, ...(!collection || model.itemIdentity ? { license } : {}) }, assets,
       links: [link('self', itemUrl, 'application/geo+json'), link('root', root), link('parent', collectionUrl ?? root), ...(collectionUrl ? [link('collection', collectionUrl)] : []), ...extraLinks],
     }
     for (const [key, value] of [['created', row.created_at], ['updated', row.updated_at]] as const) {

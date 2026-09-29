@@ -17,7 +17,7 @@
  * manipulate the `transcoding` column directly.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { onRequestPost as transcodeComplete } from './transcode-complete'
 import { asD1, makeKV, seedFixtures } from '../../../_lib/test-helpers'
 import type { PublisherRow } from '../../../_lib/publisher-store'
@@ -173,6 +173,41 @@ async function readJson<T>(res: Response): Promise<T> {
 }
 
 describe('POST .../transcode-complete — happy path', () => {
+  it.each(['superseded', 'metadata', 'missing', 'disabled', 'verified'] as const)(
+    'preserves native completion semantics during history capture: %s', async scenario => {
+      const { sqlite, datasetId, uploadId, env } = setupEnv({ uploadMime: 'image/png', uploadFrameCount: 2,
+        uploadTargetRef: `r2:uploads/${DATASET_ID}/${UPLOAD_ID}/frames/` })
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'content-type': 'image/png' } })))
+      const get = vi.fn(async () => {
+        if (scenario === 'superseded') sqlite.prepare('UPDATE datasets SET active_transcode_upload_id=?').run('NEW00' + 'A'.repeat(21))
+        if (scenario === 'metadata') sqlite.exec("UPDATE datasets SET abstract='Concurrent edit', updated_at='2026-09-29T22:00:00Z'")
+        if (scenario === 'missing') return null
+        return { text: async () => JSON.stringify([0, 1].map(index => ({ index, filename: `${index}.png`,
+          digest: `sha256:${String(index).repeat(64)}` }))) }
+      })
+      try {
+        sqlite.exec(`UPDATE datasets SET visibility='public', is_hidden=0, retracted_at=NULL,
+          published_at='2026-01-01T00:00:00Z', resource_kind='product',
+          temporal_semantics='represented', temporal_evidence='Source metadata', period='P1D',
+          start_time='2026-01-01T00:00:00Z', end_time='2026-01-02T00:00:00Z'`)
+        const configured = { ...env, STAC_HISTORY_CAPTURE: scenario === 'disabled' ? undefined : 'true',
+          R2_PUBLIC_BASE: 'https://data.example', CATALOG_R2: { get } }
+        const response = await transcodeComplete(ctx({ env: configured, datasetId,
+          body: { upload_id: uploadId, source_digest: DEFAULT_SOURCE_DIGEST } }))
+        expect(response.status).toBe(scenario === 'superseded' ? 409 : 200)
+        if (scenario === 'superseded') expect(await response.json()).toMatchObject({ error: 'transcode_upload_mismatch' })
+        else expect(sqlite.prepare('SELECT transcoding FROM datasets').get()).toEqual({ transcoding: null })
+        if (scenario === 'disabled') expect(get).not.toHaveBeenCalled()
+        expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: scenario === 'verified' ? 1 : 0 })
+        if (scenario === 'verified') {
+          expect((await transcodeComplete(ctx({ env: configured, datasetId,
+            body: { upload_id: uploadId, source_digest: DEFAULT_SOURCE_DIGEST } }))).status).toBe(200)
+          expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 1 })
+        }
+      } finally { warning.mockRestore(); vi.unstubAllGlobals(); sqlite.close() }
+    })
+
   it('clears transcoding, server-constructs data_ref, returns the updated row', async () => {
     const { sqlite, datasetId, uploadId, env } = setupEnv()
     const res = await transcodeComplete(

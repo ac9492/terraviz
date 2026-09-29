@@ -2,7 +2,7 @@
 
 **Status:** Implemented; deployment and operator backfill pending
 **Last reviewed:** 2026-09-29
-**Revisit when:** Persisted verification replaces the request probe budget, or history retention/deletion policy changes.
+**Revisit when:** Asset hosting/origin policy or history retention/deletion policy changes.
 
 One DCO-signed commit corresponds to each numbered step in the
 [metadata plan](README.md#phase-3-atomic-history).
@@ -17,29 +17,67 @@ Native publication captures frame sequences whose manifest, represented-time
 evidence, positive cadence and extent are valid. Frame assets use the existing
 content-addressed R2 keys. Publication persists IDs and timestamps rather than
 deriving them during public reads. Identical repeated publication is idempotent;
-changed scientific metadata or frame content creates a new snapshot.
+changed scientific metadata or frame content creates a new snapshot. Frame keys
+cover represented time/cadence, extent and its evidence, geographic orientation,
+encoding/scale, and ordered frame digests. Titles, abstracts, tags, rights and
+other descriptive corrections do not mint a second set of frame Items.
 
-The insert and native publication update share one D1 transaction. A comparison
-against the captured dataset columns rejects changes made while the manifest is
-being read. A failed transaction cannot leave some frames published. Invalid or
-untimestamped sequences remain native-only. Missing promised manifests fail
-publication instead of fabricating history.
+Capture requires `STAC_HISTORY_CAPTURE=true`, independently of `STAC_ENABLED`.
+It is off by default, so existing nodes do no capture reads or probes. Capture
+reads one dataset and its decorations, never the entire catalog or old history.
+The insert and native publication update share one D1 transaction. Conditional
+inserts compare an explicit list of physical dataset columns (including the
+metadata revision timestamp); a mismatch skips the snapshot rather than raising
+a synthetic CHECK failure. Joined aliases cannot become SQL identifiers.
+The transcode UPDATE retains its active-upload guard: a superseded callback
+returns the existing 409 and writes no history. A concurrent metadata edit lets
+native completion proceed without a stale snapshot. Missing/inconsistent
+manifests, failed verification and capture reads are logged and skip capture.
+If the optional history transaction fails, its atomic rollback is followed by
+the original native write without history. Native write failures still surface;
+they are not reported as successful. Invalid or untimestamped sequences remain
+native-only.
 
 The public projection reads snapshots with current parent visibility in its
 primary-backed transaction. Private, restricted, hidden, draft and retracted
-parents cannot expose historical Items, even with a warm cache. Snapshot title,
-represented time and assets do not change when current metadata changes. A
-Collection combines all eligible Items' spatial and temporal extents, with
-conservative antimeridian bounds; listing and root links do not duplicate it.
+parents cannot expose historical Items, even with a warm cache. Saved Item title,
+represented time, geometry and primary assets remain fixed. Collections use live
+titles/descriptions/keywords/links; rights, licence, organization, developer and
+citation corrections apply to both Collection and historical Item projections
+immediately. Original snapshots remain unchanged in D1 for audit. Corrected
+licensing must still pass readiness and asset validation before publication.
+Collections combine the included Items' extents with conservative antimeridian
+bounds, not the live row's uncaptured scientific changes. They do not implicitly
+choose descriptive metadata from whichever Item happened to be last.
+
+Only the latest frame publication is public (explicit capture-time order, with
+ID as a deterministic tie-break); older sets remain in D1 for lineage/audit.
+Older frame Item URLs return 404 once superseded. Workflow revisions remain
+public and linked. This prevents duplicate public timestamps after scientific
+recapture without claiming adjacent frames are versions of one another.
+The operator report includes `items_included` and `items_total` for the current
+public candidate set, so partial inclusion is visible; collection-only products
+count as zero Items. Report aggregation is keyed by dataset ID.
 
 Existing sequences are not silently backfilled. Republishing captures current
-evidenced state, not historical states that the node never retained. The Phase 2
-40-distinct-URL verification cap still applies to the entire public snapshot;
-large histories fail closed rather than silently truncating. Supporting assets
-are verified as before and are not independently archived by this step.
+evidenced state, not historical states that the node never retained. Capture
+verifies distinct immutable frame URLs with anonymous, no-redirect HEAD requests
+(16 concurrent, 3 seconds per request, 30 seconds total, at most 10,000 distinct
+frames). Every frame must pass with its declared image MIME type; otherwise no
+snapshot is captured and native publication continues. The successful source
+ref, public URL and MIME evidence is persisted in the snapshot, atomically with
+its Items. Catalog reads reuse that evidence only for the exact content-addressed
+ref, matching URL/type and current trusted-origin policy. Verified frames do not
+consume the Phase 2 40-URL request budget. Non-frame and supporting assets still
+use that budget and remain fail-closed; those assets are not independently
+archived here. Legacy/unverified frames are withheld with
+`frame_verification_required`, never silently sent through the request probe
+budget. Hosting-policy changes require an explicit verification refresh strategy
+before moving a node's immutable assets; stored evidence is not a trust bypass.
 
 Apply migration 0055 before deploying these readers. STAC remains opt-in through
-`STAC_ENABLED`; no production settings or data are changed by this PR.
+`STAC_ENABLED`; capture is separately opt-in. No production settings or data are
+changed by this PR.
 
 ## Step 2: Workflow Revisions
 
@@ -51,7 +89,8 @@ publish history; their later explicit publication captures it.
 
 Capture accepts upload-specific HLS bundle paths or content-addressed R2 assets
 with matching content digests. Mutable external URLs stay excluded. The stored
-snapshot fixes represented time, metadata and the primary asset. HLS receives
+snapshot fixes represented time, scientific metadata and the primary asset;
+the live rights/attribution overlays above still apply. HLS receives
 no invented whole-bundle checksum. Frame-producing workflows use the immutable
 run bundle as their revision Item; non-workflow sequences use per-frame Items.
 
@@ -133,6 +172,10 @@ the tables alone do not preserve R2 objects. Exercise sequence publish, workflow
 completion and retry, access withdrawal, revision traversal, and the lineage
 inventory on a staging node. Backfill only evidenced sources. Run the existing
 STAC inclusion report and reachability audit before enabling `STAC_ENABLED`.
-The request-time 40-URL cap is unchanged and remains a rollout constraint for
-large sequences or histories. No STAC API, Processing, or Versioning extension
-conformance is advertised by this change.
+Enable `STAC_HISTORY_CAPTURE=true` first to populate and verify history without
+enabling public STAC. The request-time 40-URL cap no longer counts verified frame
+assets; it remains a constraint for non-frame assets and workflow histories.
+Immutable assets must be retained: persisted verification records a successful
+capture, not a continuous availability guarantee. Run periodic reachability
+audits, and withdraw affected parents if immutable objects are removed. No STAC
+API, Processing, or Versioning extension conformance is advertised by this change.

@@ -62,6 +62,7 @@ export interface StacNodeContext {
   customFields?: StacCustomField[]
 }
 export interface StacDatasetReadModel {
+  verifiedFrameAssets?: { sourceRef: string; href: string; type: string }[]
   row: DatasetRow
   decorations: DecorationRows
   media: StacMediaIntrinsics

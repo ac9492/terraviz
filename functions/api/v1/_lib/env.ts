@@ -20,6 +20,8 @@
 export interface CatalogEnv {
   /** Opt in only after reviewing the node description and verifying the published STAC schema. */
   STAC_ENABLED?: string
+  /** Opt-in snapshot capture, independent of public STAC rollout; failures never block native publication. */
+  STAC_HISTORY_CAPTURE?: string
   /** Comma-separated HTTPS origins permitted for anonymous STAC asset probes; public R2 is also allowed. */
   STAC_ASSET_ORIGINS?: string
   /** D1 database holding the catalog tables (Phase 1a +). */

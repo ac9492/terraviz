@@ -2,7 +2,7 @@
 // Copyright 2026 The Zyra Project
 
 import type { CatalogEnv } from './env'
-import type { DatasetRow } from './catalog-store'
+import type { DatasetRow, DecorationRows } from './catalog-store'
 import type { StacDatasetReadModel } from './stac-read-model'
 import { loadFrameManifest, frameTimestamp } from './frames-manifest'
 import { evaluateTemporal } from './metadata-readiness'
@@ -12,6 +12,7 @@ import { buildContentAddressedFrameKey } from './r2-store'
 import type { StacCollection } from './stac-types'
 import { computeEtag } from './snapshot'
 import { readStacPublicationInput } from './stac-publication-store'
+import { verifyFrameAssets } from './stac-assets'
 
 export interface StacHistoryItem {
   id: string
@@ -33,23 +34,29 @@ export interface StacHistoryPublication {
   items: StacHistoryItem[]
 }
 
-export function historyModels(publication: StacHistoryPublication, parent: DatasetRow): StacDatasetReadModel[] {
+export function historyModels(publication: StacHistoryPublication, parent: DatasetRow, decorations?: DecorationRows): StacDatasetReadModel[] {
   const model = JSON.parse(publication.model_json) as StacDatasetReadModel
+  const verified = new Map(model.verifiedFrameAssets?.map(asset => [asset.sourceRef, asset]))
   return publication.items.map(item => ({ ...model,
+    decorations: { ...model.decorations, developers: decorations?.developers ?? model.decorations.developers },
+    verifiedFrameAssets: verified.has(item.data_ref) ? [verified.get(item.data_ref)!] : [],
     row: { ...model.row, data_ref: item.data_ref, content_digest: item.content_digest || null,
       format: item.format, start_time: item.start_time, end_time: item.end_time,
       visibility: parent.visibility, is_hidden: parent.is_hidden, published_at: parent.published_at,
-      retracted_at: parent.retracted_at, transcoding: 0 },
+      retracted_at: parent.retracted_at, transcoding: 0, organization: parent.organization,
+      license_spdx: parent.license_spdx, license_url: parent.license_url, license_statement: parent.license_statement,
+      rights_holder: parent.rights_holder, attribution_text: parent.attribution_text,
+      doi: parent.doi, citation_text: parent.citation_text },
     publicationKind: publication.kind === 'frame' ? 'sequence' : 'workflow',
     itemIdentity: { kind: publication.kind, persisted_id: item.id },
   }))
 }
 
 export async function prepareFrameHistory(env: CatalogEnv, row: DatasetRow, capturedAt: string): Promise<StacHistoryPublication | null> {
-  if (row.visibility !== 'public' || row.is_hidden !== 0 || !row.frame_count || !row.frame_extension || !row.frame_source_filenames_ref || !env.CATALOG_R2
+  if (env.STAC_HISTORY_CAPTURE !== 'true' || row.visibility !== 'public' || row.is_hidden !== 0 || !row.frame_count || !row.frame_extension || !row.frame_source_filenames_ref || !env.CATALOG_R2
     || !evaluateTemporal(row).ready || !row.period) return null
   if (!['png', 'jpg', 'webp'].includes(row.frame_extension) || (parseIsoDuration(row.period) ?? 0) <= 0) return null
-  const input = await readStacPublicationInput(env.CATALOG_DB!, true)
+  const input = await readStacPublicationInput(env.CATALOG_DB!, true, row.id)
   const model = input.datasets.find(dataset => dataset.row.id === row.id)
   if (!model || model.publicationKind === 'workflow') return null
   const manifest = await loadFrameManifest(env.CATALOG_R2, row.frame_source_filenames_ref.replace(/^r2:/, ''))
@@ -63,9 +70,13 @@ export async function prepareFrameHistory(env: CatalogEnv, row: DatasetRow, capt
       content_digest: entry.digest, format: row.frame_extension === 'jpg' ? 'image/jpeg' : `image/${row.frame_extension}`,
       start_time: timestamp, end_time: timestamp })
   }
-  const snapshot = { ...model, row: { ...model.row, ...row }, renditions: [] }
-  const sourceKey = (await computeEtag(JSON.stringify({ snapshot: { ...snapshot,
-    row: { ...snapshot.row, updated_at: null, published_at: null, retracted_at: null } }, frames }))).replace(/"/g, '')
+  const snapshot = { ...model, row: { ...model.row, ...row }, renditions: [],
+    verifiedFrameAssets: await verifyFrameAssets(env, frames) }
+  const scientificFields = ['id', 'origin_node', 'resource_kind', 'celestial_body', 'start_time', 'end_time', 'period',
+    'temporal_semantics', 'temporal_evidence', 'bbox_n', 'bbox_s', 'bbox_e', 'bbox_w', 'bbox_provenance', 'bbox_evidence',
+    'lon_origin', 'is_flipped_in_y', 'render_encoding', 'color_scale', 'probing_info', 'frame_extension'] as const
+  const sourceKey = (await computeEtag(JSON.stringify({ scientific: Object.fromEntries(scientificFields.map(key => [key, row[key]])),
+    frames }))).replace(/"/g, '')
   const id = `frames-${sourceKey}`
   return { id, dataset_id: row.id, kind: 'frame', source_key: sourceKey,
     model_json: JSON.stringify(snapshot), captured_at: capturedAt,
@@ -73,12 +84,12 @@ export async function prepareFrameHistory(env: CatalogEnv, row: DatasetRow, capt
 }
 
 export async function prepareWorkflowHistory(env: CatalogEnv, row: DatasetRow, capturedAt: string): Promise<StacHistoryPublication | null> {
-  if (row.visibility !== 'public' || row.is_hidden !== 0 || row.transcoding || !evaluateTemporal(row).ready) return null
+  if (env.STAC_HISTORY_CAPTURE !== 'true' || row.visibility !== 'public' || row.is_hidden !== 0 || row.transcoding || !evaluateTemporal(row).ready) return null
   const bundle = new RegExp(`^r2:videos/${row.id}/([0-9A-HJKMNP-TV-Z]{26})/master\\.m3u8$`).exec(row.data_ref)
   const content = /^sha256:([a-f0-9]{64})$/.exec(row.content_digest ?? '')
   const immutableAsset = content && row.data_ref.startsWith(`r2:datasets/${row.id}/by-digest/sha256/${content[1]}/`)
   if (!bundle && !immutableAsset) return null
-  const input = await readStacPublicationInput(env.CATALOG_DB!, true)
+  const input = await readStacPublicationInput(env.CATALOG_DB!, true, row.id)
   const model = input.datasets.find(dataset => dataset.row.id === row.id)
   if (model?.publicationKind !== 'workflow') return null
   const snapshot: StacDatasetReadModel = { ...model, row: { ...model.row, ...row }, renditions: [] }
@@ -91,25 +102,46 @@ export async function prepareWorkflowHistory(env: CatalogEnv, row: DatasetRow, c
       start_time: row.start_time!, end_time: row.end_time! }] }
 }
 
+export async function prepareHistory(env: CatalogEnv, row: DatasetRow, capturedAt: string): Promise<StacHistoryPublication | null> {
+  try { return await prepareFrameHistory(env, row, capturedAt) ?? await prepareWorkflowHistory(env, row, capturedAt) }
+  catch { console.warn('[stac-history] capture unavailable; native publication continues'); return null }
+}
+
+export async function writeWithHistory(db: D1Database, statement: D1PreparedStatement, history: D1PreparedStatement[]): Promise<number> {
+  if (history.length) {
+    try { return (await db.batch([...history, statement])).at(-1)!.meta.changes }
+    catch { console.warn('[stac-history] history transaction failed; retrying native write without history') }
+  }
+  return (await statement.run()).meta.changes
+}
+
+/** Only physical dataset columns are compared; joined aliases never become SQL identifiers.
+ * A mismatched snapshot inserts nothing, leaving the native write's conflict handling intact. */
 export function historyInsertStatements(db: D1Database, publication: StacHistoryPublication,
   expected: DatasetRow = (JSON.parse(publication.model_json) as StacDatasetReadModel).row): D1PreparedStatement[] {
-  const columns = Object.keys(expected).filter(key => /^[a-z_]+$/.test(key))
+  const columns = ['id', 'updated_at', 'title', 'abstract', 'data_ref', 'content_digest', 'source_digest',
+    'active_transcode_upload_id', 'transcoding', 'visibility', 'is_hidden', 'published_at', 'retracted_at',
+    'start_time', 'end_time', 'period', 'frame_count', 'frame_extension', 'frame_source_filenames_ref',
+    'bbox_n', 'bbox_s', 'bbox_e', 'bbox_w', 'license_spdx', 'license_url', 'license_statement'] as const
+  const expectedColumns = Object.fromEntries(columns.map(key => [key, expected[key]]))
   const matches = `EXISTS(SELECT 1 FROM datasets WHERE id = ? AND NOT EXISTS
     (SELECT 1 FROM json_each(?) expected WHERE (CASE expected.key
       ${columns.map(key => `WHEN '${key}' THEN datasets.${key}`).join(' ')} END) IS NOT expected.value))`
   const statements = [db.prepare(`INSERT INTO stac_history_publications
     (id, dataset_id, kind, source_key, model_json, captured_at)
-    VALUES (?, ?, ?, ?, CASE WHEN ${matches} THEN ? ELSE '' END, ?)
+    SELECT ?, ?, ?, ?, ?, ? WHERE ${matches}
     ON CONFLICT(dataset_id, kind, source_key) DO NOTHING`)
     .bind(publication.id, publication.dataset_id, publication.kind, publication.source_key,
-      publication.dataset_id, JSON.stringify(expected), publication.model_json, publication.captured_at)]
+      publication.model_json, publication.captured_at, publication.dataset_id, JSON.stringify(expectedColumns))]
   for (let offset = 0; offset < publication.items.length; offset += 100) {
     statements.push(db.prepare(`INSERT INTO stac_history_items
       (id, publication_id, ordinal, data_ref, content_digest, format, start_time, end_time)
       SELECT json_extract(value,'$.id'), ?, json_extract(value,'$.ordinal'), json_extract(value,'$.data_ref'),
         json_extract(value,'$.content_digest'), json_extract(value,'$.format'), json_extract(value,'$.start_time'),
-        json_extract(value,'$.end_time') FROM json_each(?) WHERE 1 ON CONFLICT(id) DO NOTHING`)
-      .bind(publication.id, JSON.stringify(publication.items.slice(offset, offset + 100))))
+        json_extract(value,'$.end_time') FROM json_each(?) WHERE ${matches}
+        AND EXISTS(SELECT 1 FROM stac_history_publications WHERE id = ?) ON CONFLICT(id) DO NOTHING`)
+      .bind(publication.id, JSON.stringify(publication.items.slice(offset, offset + 100)),
+        publication.dataset_id, JSON.stringify(expectedColumns), publication.id))
   }
   return statements
 }
@@ -142,7 +174,7 @@ export function linkHistoryRevisions(products: StacProduct[], history: StacHisto
   }
 }
 
-export function mergeHistoryCollections(products: StacProduct[]): void {
+export function mergeHistoryCollections(products: StacProduct[], liveCollections: Map<string, StacCollection> = new Map()): void {
   const groups = new Map<string, StacProduct[]>()
   for (const product of products) {
     if (!product.collection) continue
@@ -151,7 +183,7 @@ export function mergeHistoryCollections(products: StacProduct[]): void {
     groups.set(product.collection.id, group)
   }
   for (const group of groups.values()) {
-    const latest = group[group.length - 1].collection!
+    const latest = liveCollections.get(group[0].collection!.id) ?? group[0].collection!
     const boxes = group.flatMap(product => product.collection!.extent.spatial.bbox)
     const crossing = boxes.some(box => box[0] > box[2])
     const intervals = group.flatMap(product => product.collection!.extent.temporal.interval)

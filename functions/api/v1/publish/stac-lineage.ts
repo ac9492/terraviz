@@ -5,6 +5,7 @@ import type { CatalogEnv } from '../_lib/env'
 import type { PublisherData } from './_middleware'
 import { isPrivileged } from '../_lib/publisher-store'
 import { isPublicStacUrl } from '../_lib/stac-builders'
+import { ETAG_HASH_LENGTH } from '../_lib/snapshot'
 
 interface SourceEvidence {
   href: string
@@ -97,7 +98,7 @@ export const onRequestPost: PagesFunction<CatalogEnv> = async context => {
   const body = raw as Record<string, unknown>
   const evidence = sources(body.sources)
   if (Object.keys(body).some(key => !['publication_id', 'reviewed', 'sources'].includes(key))
-    || typeof body.publication_id !== 'string' || !/^(frames|revision)-[A-Za-z0-9_-]{22}$/.test(body.publication_id)
+    || typeof body.publication_id !== 'string' || !new RegExp(`^(frames|revision)-[A-Za-z0-9_-]{${ETAG_HASH_LENGTH}}$`).test(body.publication_id)
     || body.reviewed !== true || !evidence) return json(400, { error: 'invalid_body' })
   const publisher = (context.data as unknown as PublisherData).publisher
   const db = context.env.CATALOG_DB!

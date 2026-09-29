@@ -1164,8 +1164,8 @@ export async function clearTranscoding(
         datasetId,
         uploadId,
       )
-    const result = historyStatements.length ? (await db.batch([...historyStatements, statement])).at(-1)! : await statement.run()
-    return result.meta?.changes ?? 0
+    const { writeWithHistory } = await import('./stac-history')
+    return writeWithHistory(db, statement, historyStatements)
   }
   const statement = db
     .prepare(
@@ -1178,8 +1178,8 @@ export async function clearTranscoding(
        WHERE id = ? AND active_transcode_upload_id = ?`,
     )
     .bind(dataRef, now, datasetId, uploadId)
-  const result = historyStatements.length ? (await db.batch([...historyStatements, statement])).at(-1)! : await statement.run()
-  return result.meta?.changes ?? 0
+  const { writeWithHistory } = await import('./stac-history')
+  return writeWithHistory(db, statement, historyStatements)
 }
 
 /**

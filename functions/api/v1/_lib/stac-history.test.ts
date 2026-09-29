@@ -20,7 +20,7 @@ describe('immutable STAC history', () => {
       frame_source_filenames_ref='r2:manifest.json', period='P1D', format='video/mp4'`)
     const manifest = [{ index: 0, filename: 'one.png', digest: `sha256:${'a'.repeat(64)}` },
       { index: 1, filename: 'two.png', digest: `sha256:${'b'.repeat(64)}` }]
-    const env: CatalogEnv = { ...fixture.env, R2_PUBLIC_BASE: 'https://data.example',
+    const env: CatalogEnv = { ...fixture.env, STAC_HISTORY_CAPTURE: 'true', R2_PUBLIC_BASE: 'https://data.example',
       CATALOG_R2: { get: vi.fn(async () => ({ text: async () => JSON.stringify(manifest) })) } as unknown as R2Bucket }
     return { ...fixture, env, manifest }
   }
@@ -44,20 +44,97 @@ describe('immutable STAC history', () => {
       expect((await readStacPublication(env)).products.map(product => product.item!.id)).toEqual(itemIds)
       sqlite.exec("UPDATE datasets SET start_time='2020-01-01T00:00:00Z', title='New title', slug='new-slug'")
       const later = await readStacPublication(env)
-      expect(later.products).toEqual(first.products)
+      expect(later.products.map(product => product.item)).toEqual(first.products.map(product => product.item))
+      expect(later.products[0].collection!.title).toBe('New title')
       sqlite.exec("UPDATE datasets SET visibility='private'")
       expect((await readStacPublication(env)).products).toEqual([])
       expect((await serveStac(new Request(`https://node.example/api/v1/stac/items/${itemIds[0]}`), env)).status).toBe(404)
     } finally { sqlite.close() }
   })
 
-  it('rolls back a snapshot if parent metadata changes while frame assets are read', async () => {
+  it('keeps native publication independent of disabled capture and missing manifests', async () => {
     const { sqlite, ids, env } = sequenceFixture()
+    const get = vi.mocked(env.CATALOG_R2!.get)
+    get.mockResolvedValue(null)
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect((await publishDataset({ ...env, STAC_ENABLED: undefined, STAC_HISTORY_CAPTURE: undefined }, ids[0])).ok).toBe(true)
+      expect(get).not.toHaveBeenCalled()
+      expect((await publishDataset(env, ids[0])).ok).toBe(true)
+      expect(warning).toHaveBeenCalled()
+      expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 0 })
+    } finally { warning.mockRestore(); sqlite.close() }
+  })
+
+  it.each(['image/jpeg', 'failure'])('does not capture unverified frame assets: %s', async result => {
+    const { sqlite, ids, env } = sequenceFixture()
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: result === 'failure' ? 503 : 200,
+      headers: { 'content-type': result } })))
+    try {
+      expect((await publishDataset(env, ids[0])).ok).toBe(true)
+      expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 0 })
+    } finally { warning.mockRestore(); sqlite.close() }
+  })
+
+  it('retries the native write if optional history storage fails atomically', async () => {
+    const { sqlite, ids, env } = sequenceFixture()
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'content-type': 'image/png' } })))
+    const batch = vi.spyOn(env.CATALOG_DB!, 'batch').mockRejectedValueOnce(new Error('History storage unavailable'))
+    try {
+      expect((await publishDataset(env, ids[0])).ok).toBe(true)
+      expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 0 })
+      expect(warning).toHaveBeenCalled()
+    } finally { batch.mockRestore(); warning.mockRestore(); sqlite.close() }
+  })
+
+  it('reads only the capture dataset and no prior history', async () => {
+    const { sqlite, ids, env } = stacRouteFixture(3)
+    try {
+      sqlite.prepare(`INSERT INTO stac_history_publications (id,dataset_id,kind,source_key,model_json,captured_at)
+        VALUES ('ignored',?,'frame','ignored','{}','2026-01-01')`).run(ids[0])
+      const input = await readStacPublicationInput(env.CATALOG_DB, true, ids[1])
+      expect(input.datasets.map(dataset => dataset.row.id)).toEqual([ids[1]])
+      expect(input.history).toEqual([])
+    } finally { sqlite.close() }
+  })
+
+  it('does not mint frames for descriptive edits and projects corrected Collection metadata immediately', async () => {
+    const { sqlite, ids, env } = sequenceFixture()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'content-type': 'image/png' } })))
+    try {
+      await publishDataset(env, ids[0])
+      const first = await readStacPublication(env)
+      sqlite.exec("UPDATE datasets SET title='Corrected title', abstract='Corrected description', license_spdx='CC0-1.0', attribution_text='Corrected attribution'")
+      const edited = await readStacPublication(env)
+      expect(edited.products[0].collection).toMatchObject({ title: 'Corrected title', description: 'Corrected description',
+        license: 'CC0-1.0', 'terraviz:attribution': 'Corrected attribution' })
+      for (const [index, product] of edited.products.entries()) {
+        expect(product.item).toMatchObject({ id: first.products[index].item!.id, geometry: first.products[index].item!.geometry,
+          assets: first.products[index].item!.assets, properties: { datetime: first.products[index].item!.properties.datetime,
+            title: first.products[index].item!.properties.title, license: 'CC0-1.0', 'terraviz:attribution': 'Corrected attribution' } })
+      }
+      await publishDataset(env, ids[0])
+      expect((await readStacPublication(env)).products.map(product => product.item!.id)).toEqual(first.products.map(product => product.item!.id))
+      expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 1 })
+      sqlite.exec("UPDATE datasets SET start_time='2026-01-03T00:00:00Z', end_time='2026-01-04T00:00:00Z'")
+      await publishDataset(env, ids[0])
+      const revised = await readStacPublication(env)
+      expect(revised.products).toHaveLength(2)
+      expect(revised.products.map(product => product.item!.properties.datetime)).toEqual(['2026-01-03T00:00:00.000Z', '2026-01-04T00:00:00.000Z'])
+      expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 2 })
+    } finally { sqlite.close() }
+  })
+
+  it('skips a snapshot if parent metadata changes while frame assets are read', async () => {
+    const { sqlite, ids, env } = sequenceFixture()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'content-type': 'image/png' } })))
     try {
       const row = (await readStacPublicationInput(env.CATALOG_DB!, true)).datasets[0].row
       const publication = (await prepareFrameHistory(env, row, '2026-09-29T00:00:00Z'))!
       sqlite.exec("UPDATE datasets SET title='Concurrent edit'")
-      await expect(env.CATALOG_DB!.batch(historyInsertStatements(env.CATALOG_DB!, publication))).rejects.toThrow()
+      await env.CATALOG_DB!.batch(historyInsertStatements(env.CATALOG_DB!, publication))
       expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 0 })
       expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_items').get()).toEqual({ total: 0 })
       expect(publication.dataset_id).toBe(ids[0])
@@ -76,7 +153,7 @@ describe('immutable STAC history', () => {
 
   it('retains workflow revisions across bundle swaps and makes completion atomic', async () => {
     const { sqlite, ids, env } = stacRouteFixture()
-    const configured: CatalogEnv = { ...env, R2_PUBLIC_BASE: 'https://data.example' }
+    const configured: CatalogEnv = { ...env, STAC_HISTORY_CAPTURE: 'true', R2_PUBLIC_BASE: 'https://data.example' }
     const uploadId = '01ARZ3NDEKTSV4RRFFQ69G5FAV'
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'Content-Type': 'application/vnd.apple.mpegurl' } })))
     try {
@@ -123,6 +200,44 @@ describe('immutable STAC history', () => {
       expect(await prepareWorkflowHistory(configured, { ...current, data_ref: 'url:https://data.example/latest.mp4' }, now)).toBeNull()
       expect(await prepareWorkflowHistory(configured, { ...current, transcoding: 1 }, now)).toBeNull()
       expect(await prepareWorkflowHistory(configured, { ...current, visibility: 'private' }, now)).toBeNull()
+    } finally { sqlite.close() }
+  })
+
+  it('serves a 45-frame sequence from persisted verification without request-time HEADs', async () => {
+    const { sqlite, ids, env, manifest } = sequenceFixture()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'content-type': 'image/png' } })))
+    try {
+      manifest.splice(0, manifest.length, ...Array.from({ length: 45 }, (_, index) => ({ index,
+        filename: `${index}.png`, digest: `sha256:${index.toString(16).padStart(64, '0')}` })))
+      sqlite.exec("UPDATE datasets SET frame_count=45, end_time='2026-02-14T00:00:00Z'")
+      expect((await publishDataset(env, ids[0])).ok).toBe(true)
+      expect(fetch).toHaveBeenCalledTimes(45)
+      vi.mocked(fetch).mockClear()
+      const publication = await readStacPublication(env)
+      expect(publication.products).toHaveLength(45)
+      expect(publication.publicationIssues).toEqual([])
+      expect(fetch).not.toHaveBeenCalled()
+      const changedHost = await readStacPublication({ ...env, R2_PUBLIC_BASE: 'http://untrusted.example' })
+      expect(changedHost.products).toHaveLength(0)
+    } finally { sqlite.close() }
+  })
+
+  it('reports partial Item inclusion and withholds legacy unverified frames without probing', async () => {
+    const { sqlite, ids, env } = sequenceFixture()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'content-type': 'image/png' } })))
+    try {
+      const row = (await readStacPublicationInput(env.CATALOG_DB!, true)).datasets[0].row
+      const publication = (await prepareFrameHistory(env, row, '2026-09-29T00:00:00Z'))!
+      const saved = JSON.parse(publication.model_json)
+      saved.verifiedFrameAssets = saved.verifiedFrameAssets.slice(0, 1)
+      publication.model_json = JSON.stringify(saved)
+      await env.CATALOG_DB!.batch(historyInsertStatements(env.CATALOG_DB!, publication))
+      vi.mocked(fetch).mockClear()
+      const result = await readStacPublication(env)
+      expect(result.products).toHaveLength(1)
+      expect(result.report).toEqual([expect.objectContaining({ id: ids[0], included: true,
+        items_included: 1, items_total: 2, reasons: expect.arrayContaining(['frame_verification_required']) })])
+      expect(fetch).not.toHaveBeenCalled()
     } finally { sqlite.close() }
   })
 

@@ -20,7 +20,7 @@ export interface StacPublicationInput extends StacReadModel {
   history: StacHistoryPublication[]
 }
 
-export async function readStacPublicationInput(db: D1Database, includeNonPublic = false): Promise<StacPublicationInput> {
+export async function readStacPublicationInput(db: D1Database, includeNonPublic = false, captureDatasetId?: string): Promise<StacPublicationInput> {
   const session = db.withSession('first-primary')
   const results = await session.batch([
     session.prepare('SELECT node_id, display_name, base_url, description, contact_email, public_key, created_at FROM node_identity LIMIT 1'),
@@ -36,13 +36,13 @@ export async function readStacPublicationInput(db: D1Database, includeNonPublic 
         'ref', ref, 'mime_type', mime_type, 'content_digest', content_digest, 'created_at', created_at))
         FROM (SELECT * FROM dataset_renditions WHERE dataset_id = datasets.id ORDER BY rendition_id)) AS stac_renditions,
       EXISTS(SELECT 1 FROM workflows WHERE target_dataset_id = datasets.id) AS stac_workflow
-      FROM datasets WHERE ${includeNonPublic ? '1 = 1' : PUBLIC_DATASET_PREDICATE} ORDER BY id`),
+      FROM datasets WHERE ${captureDatasetId ? 'id = ?' : includeNonPublic ? '1 = 1' : PUBLIC_DATASET_PREDICATE} ORDER BY id`).bind(...(captureDatasetId ? [captureDatasetId] : [])),
     session.prepare('SELECT org_name, logo_ref FROM node_profile WHERE id = 1'),
     session.prepare(`SELECT history.*, (SELECT json_group_array(json_object(
       'id', id, 'ordinal', ordinal, 'data_ref', data_ref, 'content_digest', content_digest,
       'format', format, 'start_time', start_time, 'end_time', end_time)) FROM
       (SELECT * FROM stac_history_items WHERE publication_id = history.id ORDER BY ordinal)) AS items_json
-      FROM stac_history_publications history WHERE dataset_id IN
+      FROM stac_history_publications history WHERE ${captureDatasetId ? '0' : '1'} AND dataset_id IN
         (SELECT id FROM datasets WHERE ${includeNonPublic ? '1 = 1' : PUBLIC_DATASET_PREDICATE})
       ORDER BY captured_at, id`),
   ])
