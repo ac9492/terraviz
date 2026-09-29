@@ -4171,12 +4171,21 @@ itself as a parsing mistake.
 
 #### What the operator will see
 
-A compliant player drops any cell touching a no-data node, so each
+A compliant player drops any triangle touching a no-data node, so each
 projector's image stops up to one cell short of its silhouette: about
 48 px on a 1920-wide raster at 41×41. Most of that edge carries no
 light anyway — the median silhouette node's weight is 0 — but the top
 tenth carries 0.45 or more, and two nodes per projector carry full
-weight, so a stair-step can show there. The ring of cells just inside
+weight, so a stair-step can show there. Those are the polar ends of
+each disc, which no neighbouring projector reaches, so the share
+stays high up to the edge and the only fade is sphere-sim's polar
+mask. Near the limb one cell spans about 8.5° of latitude, so that
+fade falls inside a single cell, or between the last node and a miss.
+sphere-sim's own preview has no staircase because it traces every
+pixel rather than drawing the mesh. A cell with three good corners
+is split along whichever diagonal keeps them, so every side of a disc
+steps at 45° rather than two sides at right angles. A fixed split drew
+nothing in half of those cells. The ring of cells just inside
 that edge is also the grid's least accurate: against sphere-sim's
 tracer its content lands a median 5.6 px from where it belongs and up
 to 28, where one ring further in the worst is 4. The fix for both is a
@@ -6786,7 +6795,10 @@ being drawn in the single pass rung 16 specifies.
 **W8. The silhouette edge.** With the pattern on, look at each
 projector's silhouette edge. A stair-step up to one mesh cell
 deep — about 48 px on a 1920-wide raster at 41×41 — is expected
-where the edge carries blend weight. So is misregistration in
+where the edge carries blend weight: at the polar ends of each
+disc, not at the overlapping sides. Its steps run at 45°, on every
+side alike; a side whose steps are square is a cell split that
+dropped a triangle it could draw. So is misregistration in
 the ring of cells just inside it, where the graticule can sit
 several pixels off across an overlap — up to 28 on Boulder's
 meshes, which is the grid's own error there. This step sets

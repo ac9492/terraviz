@@ -272,6 +272,32 @@ describe('buildWarpGeometry', () => {
     expect(g.meshes[0]).toMatchObject({ triangles: 7, droppedNoData: 1, droppedWide: 0 })
   })
 
+  it('draws the triangle of an edge cell\'s three good corners, whichever corner is missing', () => {
+    // A fixed split drew nothing where the missing corner sat on its
+    // diagonal, so two sides of every projector's disc were a staircase.
+    const corners = { a: [0, 0], b: [1, 0], c: [0, 1], d: [1, 1] } as const
+    for (const [name, [mi, mj]] of Object.entries(corners)) {
+      const mesh = parsed(gridText(2, 2, (i, j) => (i === mi && j === mj ? null : smooth(i, j))))
+      const g = buildWarpGeometry([{ mesh, viewport: FULL }])
+      expect(g.meshes[0], name).toMatchObject({ triangles: 1, droppedNoData: 1 })
+      // The drawn triangle is the three good corners: half the cell, on
+      // the side away from the missing one.
+      const far = { a: [0.5, -0.5], b: [-0.5, -0.5], c: [0.5, 0.5], d: [-0.5, 0.5] }[name]!
+      const near = { a: [-0.5, 0.5], b: [0.5, 0.5], c: [-0.5, -0.5], d: [0.5, -0.5] }[name]!
+      expect(sampleWarpGeometry(g, far[0], far[1]), name).not.toBeNull()
+      expect(sampleWarpGeometry(g, near[0], near[1]), name).toBeNull()
+    }
+  })
+
+  it('keeps a full cell on the diagonal the parity fixtures were measured on', () => {
+    // Weights 1 on a and d, 0 on b and c: the cell's centre lies on both
+    // diagonals, and reads 0 split along b–c but 1 along a–d.
+    const mesh = parsed(gridText(2, 2, (i, j) => [0.45 + 0.02 * i, 0.55 - 0.02 * j, i === j ? 1 : 0]))
+    const g = buildWarpGeometry([{ mesh, viewport: FULL }])
+    expect(g.meshes[0]).toMatchObject({ triangles: 2, droppedNoData: 0 })
+    expect(sampleWarpGeometry(g, 0, 0)!.weight).toBeCloseTo(0, 6)
+  })
+
   it("turns each node's texel into a direction through equirectRtt's frame", () => {
     for (const [u, v] of [[0.5, 0.5], [0.25, 0.8], [1, 0.3], [0, 0.3]]) {
       const expected = latLonToDirection((v - 0.5) * 180, (u - 0.5) * 360)

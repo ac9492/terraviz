@@ -465,7 +465,13 @@ Two things will look imperfect and are not faults in this app:
 
 - **Each projector's picture stops short of its edge** by up to one
   mesh cell: about 48 px on a 1920-wide projector at the default
-  grid. It shows as a stair-step where that edge carries light.
+  grid. It shows as a stepped outline where that edge carries light,
+  which is at the top and bottom of each projector's picture: the
+  polar regions, which that projector lights alone. At the sides,
+  where projectors overlap, the picture has faded out before its edge
+  and the steps are black on black. sphere-sim's projector preview
+  shows no steps because it traces every pixel; a warp file carries
+  only the grid.
 - **The ring of cells just inside that edge is the least
   accurate.** The graticule can sit a few pixels off across an
   overlap there, up to about 28 px on the Boulder rig's meshes.

@@ -312,12 +312,31 @@ type Tri = [number, number, number]
  * The two triangles a grid cell is drawn as, by node index. One
  * definition for the build and the parse, so that "this mesh draws
  * something" is asked of the triangles the build will actually draw.
+ *
+ * A full cell splits along b–c, the diagonal the parity fixtures were
+ * measured on. A cell missing b or c splits along a–d instead, so the
+ * triangle of its three good corners is drawn. A fixed split drew nothing
+ * in every cell whose missing corner sat on the diagonal. That left a
+ * right-angle staircase on two sides of each projector's disc and a 45°
+ * chamfer on the other two, and at the poles, where one projector alone
+ * lights the edge, the staircase was bright.
  */
-function cellTriangles(cols: number, i: number, j: number): [Tri, Tri] {
+function cellTriangles(
+  cols: number,
+  i: number,
+  j: number,
+  drawable: (node: number) => boolean,
+): [Tri, Tri] {
   const a = j * cols + i
   const b = a + 1
   const c = a + cols
   const d = c + 1
+  if (!drawable(b) || !drawable(c)) {
+    return [
+      [a, b, d],
+      [a, d, c],
+    ]
+  }
   return [
     [a, b, c],
     [b, d, c],
@@ -338,7 +357,7 @@ function meshLight(cols: number, rows: number, nodes: readonly WarpNode[]): 'lit
   let found: 'unlit' | 'none' = 'none'
   for (let j = 0; j < rows - 1; j++) {
     for (let i = 0; i < cols - 1; i++) {
-      for (const tri of cellTriangles(cols, i, j)) {
+      for (const tri of cellTriangles(cols, i, j, (k) => nodes[k].drawable)) {
         if (!tri.every((k) => nodes[k].drawable)) continue
         if (tri.some((k) => nodes[k].weight > 0)) return 'lit'
         found = 'unlit'
@@ -487,7 +506,7 @@ export function buildWarpGeometry(placed: readonly PlacedWarpMesh[]): WarpGeomet
     let droppedNoData = 0
     for (let j = 0; j < rows - 1; j++) {
       for (let i = 0; i < cols - 1; i++) {
-        for (const tri of cellTriangles(cols, i, j)) {
+        for (const tri of cellTriangles(cols, i, j, (k) => dirs[k] !== null)) {
           const [p, q, r] = tri.map((k) => dirs[k])
           if (p === null || q === null || r === null) {
             droppedNoData++
