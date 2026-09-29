@@ -39,6 +39,7 @@ Phase 2 opt-in public projection:
 | `functions/api/v1/_lib/stac-http.ts` | Core-resource routing, bounded cursor pagination, media types, revalidated ETags and non-cacheable errors; no STAC API conformance claim |
 | `functions/api/v1/stac/[[path]].ts` | Opt-in public STAC route boundary; unavailable inputs fail closed |
 | `functions/api/v1/publish/stac-report.ts` | Authenticated admin/service-only, no-store STAC inclusion/exclusion report over all rows; no private URLs, titles or cached operator data |
+| `functions/api/v1/publish/stac-lineage.ts` | Admin/service-only paginated lineage inventory and immutable, reviewed source-evidence backfill per saved publication; bounded requests, idempotent writes, Processing remains disabled |
 | `functions/schema/stac/terraviz/v1.0.0/schema.json.ts` | Immutable public Terraviz extension schema, sourced directly from the reviewed local schema |
 
 | File | Responsibility |

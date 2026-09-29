@@ -1,6 +1,6 @@
 # Phase 3: Atomic History
 
-**Status:** Implementation in progress
+**Status:** Implemented; deployment and operator backfill pending
 **Last reviewed:** 2026-09-29
 **Revisit when:** Persisted verification replaces the request probe budget, or history retention/deletion policy changes.
 
@@ -76,3 +76,63 @@ These registered link relations do not claim the STAC Versioning extension.
 Links are a live projection and can change as revisions arrive, while the saved
 metadata and primary asset remain immutable. History is a cache dependency, so
 new revisions update prior Items' ETags and links without changing their IDs.
+
+## Step 4: Source-Lineage Backfill
+
+Migration 0056 adds an immutable evidence record for each saved publication.
+`GET /api/v1/publish/stac-lineage` inventories all publications, including those
+with missing lineage, in 50-row pages. Follow `next_cursor` using `?cursor=`.
+`POST` at the same path records the reviewed source set. Both methods require
+an active admin or service publisher and always return `private, no-store`.
+The endpoint works while public STAC is disabled so backfill can precede rollout.
+
+The POST body has exactly these fields:
+
+```json
+{
+	"publication_id": "revision-<saved-22-character-id>",
+	"reviewed": true,
+	"sources": [{
+		"href": "https://data.example/inputs/model.nc",
+		"content_digest": "sha256:<64-lowercase-hex>",
+		"evidence_href": "https://data.example/evidence/run.json",
+		"evidence_digest": "sha256:<64-lowercase-hex>"
+	}]
+}
+```
+
+Use the actual `publication_id` from the inventory, not an Item ID. For a frame
+publication the evidence must describe the source set for the entire captured
+sequence. Inspect retained source files and acquisition/execution records;
+compute their digests and review their relationship to this precise saved
+publication before submitting. A workflow template, successful run status,
+rendered upload digest, or matching title alone does not establish the original
+scientific source. Leave the record missing when evidence is unavailable.
+
+Sources must use canonical public HTTPS URLs without credentials, query strings
+or fragments; signed/private locators must not be submitted. The request is
+limited to 64 KiB and 1-32 distinct sources. A first insert returns 201, an
+identical retry (independent of source order) returns 200, and a changed source
+set returns 409 without replacing evidence. Unknown publications return 404;
+invalid input returns 400 and oversized input 413. The inventory includes the
+reviewer's publisher ID and server timestamp. Dataset deletion cascades through
+the history and lineage records.
+
+`operator_attested` means a privileged curator supplied reviewed evidence, not
+that the server fetched and scientifically verified it. No remote requests are
+made, no source evidence enters public STAC, and **Processing remains disabled**
+even after backfill. Enabling it requires separately reviewed processing facts,
+extension registration/schema validation, public-source permissions, and tests;
+source lineage is necessary but not sufficient. This PR provides the backfill
+mechanism, not a claim that production records have already been reviewed.
+
+## Rollout
+
+Apply 0055 and 0056 before deploying. Retain historical source assets and bundles;
+the tables alone do not preserve R2 objects. Exercise sequence publish, workflow
+completion and retry, access withdrawal, revision traversal, and the lineage
+inventory on a staging node. Backfill only evidenced sources. Run the existing
+STAC inclusion report and reachability audit before enabling `STAC_ENABLED`.
+The request-time 40-URL cap is unchanged and remains a rollout constraint for
+large sequences or histories. No STAC API, Processing, or Versioning extension
+conformance is advertised by this change.
