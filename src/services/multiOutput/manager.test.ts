@@ -26,6 +26,7 @@ vi.mock('../../analytics', () => ({ emit: vi.fn() }))
 
 import { emit } from '../../analytics'
 import {
+  DEFAULT_BLEND_GAMMA,
   DEFAULT_FRAMEBUFFER_WIDTH,
   OUTPUT_REATTACH_EVENT,
   OUTPUT_RENDER_CONFIG_EVENT,
@@ -35,6 +36,8 @@ import {
   type OutputRenderConfig,
   type OutputStateMessage,
 } from './protocol'
+import { createWarpSetStore, type WarpSetStore, type WarpStorageLike } from './warpStorage'
+import { readWarpSources, warpSetId, type WarpSource } from './warpImport'
 import {
   MultiOutputManager,
   OUTPUT_ENTRY_URL,
@@ -283,9 +286,28 @@ function memoryStore(initial?: Partial<PersistedOutputConfig>): OutputConfigStor
 }
 
 /** Construct a manager with an isolated store and a free stagger. */
+/**
+ * `Storage` over a Map, for the warp store — the same isolation reason
+ * as `memoryStore`: happy-dom's `localStorage` is shared across cases.
+ */
+function memoryWarpStorage(): WarpStorageLike & { map: Map<string, string> } {
+  const map = new Map<string, string>()
+  return {
+    map,
+    getItem: key => map.get(key) ?? null,
+    setItem: (key, value) => void map.set(key, value),
+    removeItem: key => void map.delete(key),
+    get length() {
+      return map.size
+    },
+    key: index => [...map.keys()][index] ?? null,
+  }
+}
+
 function makeManager(host: MultiOutputHost, deps: MultiOutputDeps = {}): MultiOutputManager {
   return new MultiOutputManager(host, {
     store: deps.store ?? memoryStore(),
+    warpStore: deps.warpStore ?? createWarpSetStore(memoryWarpStorage()),
     sleep: deps.sleep ?? (async () => {}),
     // Stated, never inherited. The default reads `maxVideoPanels()`,
     // which answers from happy-dom's viewport size — so a case about
@@ -624,6 +646,8 @@ describe('broadcast', () => {
           framebufferWidth: DEFAULT_FRAMEBUFFER_WIDTH,
           debugOverlay: true,
           calibration: false,
+          warp: null,
+          blendGamma: DEFAULT_BLEND_GAMMA,
         },
       },
     ])
@@ -1322,6 +1346,8 @@ describe('persistence', () => {
         rotationOffsetDeg: 0,
         framebufferWidth: DEFAULT_FRAMEBUFFER_WIDTH,
         debugOverlay: false,
+        warpId: null,
+        blendGamma: DEFAULT_BLEND_GAMMA,
       },
     ])
   })
@@ -1511,6 +1537,8 @@ const persistedOn = (label: string, monitor: OutputMonitor) => ({
   rotationOffsetDeg: 0,
   framebufferWidth: DEFAULT_FRAMEBUFFER_WIDTH,
   debugOverlay: false,
+  warpId: null,
+  blendGamma: DEFAULT_BLEND_GAMMA,
 })
 
 describe('restoreOutputs', () => {
@@ -2038,6 +2066,8 @@ describe('telemetry', () => {
           rotationOffsetDeg: 0,
           framebufferWidth: 4096,
           debugOverlay: false,
+          warpId: null,
+          blendGamma: DEFAULT_BLEND_GAMMA,
         },
       ],
     })
@@ -2396,5 +2426,211 @@ describe('adoptOrphanedOutputs', () => {
     // Costs the scan and nothing else — the restore behind it still has
     // to run, so this must not reject.
     await expect(makeManager(fake.host).adoptOrphanedOutputs()).resolves.toEqual([])
+  })
+})
+
+describe('warp sets (rung 16)', () => {
+  /** The smallest mesh the parser accepts: 2×2, 16:9, every node drawn. */
+  const MESH = ['2', '2 2', '-1.777778 1 0.25 0.75 1', '1.777778 1 0.75 0.75 1', '-1.777778 -1 0.25 0.25 1', '1.777778 -1 0.75 0.25 1', ''].join('\n')
+  const OTHER = MESH.replace('0.25 0.75', '0.3 0.75')
+
+  function sources(files: Record<string, string>): readonly WarpSource[] {
+    const read = readWarpSources(Object.entries(files).map(([name, text]) => ({ name, bytes: new TextEncoder().encode(text) })))
+    if (!read.ok) throw new Error(read.refusal.code)
+    return read.sources
+  }
+
+  async function warpOutput(options: { warpStore?: WarpSetStore; store?: ReturnType<typeof memoryStore> } = {}) {
+    const fake = createFakeHost()
+    const storage = memoryWarpStorage()
+    const warpStore = options.warpStore ?? createWarpSetStore(storage)
+    const store = options.store ?? memoryStore()
+    const manager = makeManager(fake.host, { warpStore, store })
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0, mode: 'projector-warp' })
+    fake.send(ready('output-1', 'projector-warp'))
+    fake.emitted.length = 0
+    return { fake, manager, storage, warpStore, store }
+  }
+
+  it('stores the set, names it in the config, and sends it to the output', async () => {
+    const { fake, manager, storage, store } = await warpOutput()
+
+    const result = await manager.importWarpSet('output-1', sources({ 'P1.data': MESH, 'P2.data': MESH }), 'sos-quadrants')
+
+    if (!result.ok) throw new Error(JSON.stringify(result.refusal))
+    expect(result.meshes).toBe(2)
+    expect([...storage.map.keys()]).toEqual([`sos-multi-output-warp:${result.id}`])
+    expect(store.current().outputs[0].warpId).toBe(result.id)
+    const sent = configEmits(fake.emitted)[0].config
+    expect(sent.warp?.id).toBe(result.id)
+    expect(sent.warp?.meshes.map(m => [m.id, m.viewport])).toEqual([
+      ['P1', { x: 0, y: 0, w: 0.5, h: 0.5 }],
+      ['P2', { x: 0.5, y: 0, w: 0.5, h: 0.5 }],
+    ])
+    // The file names stay behind: the output has no use for them.
+    expect(sent.warp?.meshes[0]).not.toHaveProperty('sourceName')
+  })
+
+  it('refuses, changing nothing, for an output that is not a warp output or does not exist', async () => {
+    const fake = createFakeHost()
+    const store = memoryStore()
+    const manager = makeManager(fake.host, { store })
+    await manager.addOutput({ monitorIndex: 0 })
+
+    const set = sources({ 'P1.data': MESH })
+    expect(await manager.importWarpSet('output-1', set, 'sos-quadrants')).toEqual({
+      ok: false,
+      refusal: { code: 'not-a-warp-output' },
+    })
+    expect(await manager.importWarpSet('output-9', set, 'sos-quadrants')).toEqual({
+      ok: false,
+      refusal: { code: 'no-output' },
+    })
+    expect(store.current().outputs[0].warpId).toBeNull()
+  })
+
+  it('passes a layout refusal through, and keeps the set the output had', async () => {
+    const { manager, store } = await warpOutput()
+    const first = await manager.importWarpSet('output-1', sources({ 'P1.data': MESH }), 'sos-quadrants')
+
+    const second = await manager.importWarpSet('output-1', sources({ 'Projector 1.data': MESH }), 'sos-quadrants')
+
+    expect(second).toEqual({ ok: false, refusal: { code: 'layout', reason: 'unplaceable', ids: ['Projector 1'] } })
+    expect(store.current().outputs[0].warpId).toBe(first.ok && first.id)
+  })
+
+  it('refuses a set storage will not take, whole, and keeps the one the output had', async () => {
+    const storage = memoryWarpStorage()
+    let full = false
+    const warpStore = createWarpSetStore({
+      ...storage,
+      get length() {
+        return storage.length
+      },
+      setItem: (key, value) => {
+        if (full) throw Object.assign(new Error('full'), { name: 'QuotaExceededError' })
+        storage.setItem(key, value)
+      },
+    })
+    const { fake, manager, store } = await warpOutput({ warpStore })
+    const first = await manager.importWarpSet('output-1', sources({ 'P1.data': MESH }), 'sos-quadrants')
+    fake.emitted.length = 0
+    full = true
+
+    const second = await manager.importWarpSet('output-1', sources({ 'P1.data': OTHER }), 'sos-quadrants')
+
+    expect(second).toEqual({ ok: false, refusal: { code: 'storage', reason: 'no-room' } })
+    expect(store.current().outputs[0].warpId).toBe(first.ok && first.id)
+    expect(configEmits(fake.emitted)).toEqual([])
+  })
+
+  it('deletes the set it replaces, unless another output still names it', async () => {
+    const { fake, manager, warpStore } = await warpOutput()
+    await manager.addOutput({ monitorIndex: 1, mode: 'projector-warp' })
+    fake.send(ready('output-2', 'projector-warp'))
+    const shared = sources({ 'P1.data': MESH })
+    const a = await manager.importWarpSet('output-1', shared, 'sos-quadrants')
+    await manager.importWarpSet('output-2', shared, 'sos-quadrants')
+
+    // output-2 still names it, so replacing output-1's keeps it.
+    const b = await manager.importWarpSet('output-1', sources({ 'P1.data': OTHER }), 'sos-quadrants')
+    expect(warpStore.list().sort()).toEqual([a.ok && a.id, b.ok && b.id].sort())
+
+    // Now nothing does.
+    await manager.clearOutputWarp('output-2')
+    expect(warpStore.list()).toEqual([b.ok && b.id])
+  })
+
+  it('clears to nothing: no reference, no stored set, and the output told', async () => {
+    const { fake, manager, warpStore, store } = await warpOutput()
+    await manager.importWarpSet('output-1', sources({ 'P1.data': MESH }), 'sos-quadrants')
+    fake.emitted.length = 0
+
+    await manager.clearOutputWarp('output-1')
+
+    expect(store.current().outputs[0].warpId).toBeNull()
+    expect(warpStore.list()).toEqual([])
+    expect(configEmits(fake.emitted)[0].config.warp).toBeNull()
+  })
+
+  it('lets a set go with a deliberate removal, and keeps it through a crash', async () => {
+    const removed = await warpOutput()
+    await removed.manager.importWarpSet('output-1', sources({ 'P1.data': MESH }), 'sos-quadrants')
+    await removed.manager.removeOutput('output-1')
+    expect(removed.warpStore.list()).toEqual([])
+
+    // A crash is the display taking the output away, not the operator
+    // letting go of it: the calibration stays for the next launch.
+    const crashed = await warpOutput()
+    await crashed.manager.importWarpSet('output-1', sources({ 'P1.data': MESH }), 'sos-quadrants')
+    await crashed.fake.destroy('output-1')
+    expect(crashed.manager.outputs()).toEqual([])
+    expect(crashed.warpStore.list()).toHaveLength(1)
+  })
+
+  it('restores an output with its set loaded, re-read through the same check', async () => {
+    const storage = memoryWarpStorage()
+    const warpStore = createWarpSetStore(storage)
+    const set = sources({ 'P3.data': MESH })
+    const id = warpSetId([{ id: 'P3', viewport: { x: 0, y: 0.5, w: 0.5, h: 0.5 }, text: MESH }])
+    warpStore.write(id, { layoutFrom: 'sos-quadrants', meshes: [{ id: 'P3', viewport: { x: 0, y: 0.5, w: 0.5, h: 0.5 }, text: set[0].text, sourceName: 'P3.data' }] }, 'x')
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host, {
+      warpStore,
+      store: memoryStore({
+        autoRestoreOnLaunch: true,
+        outputs: [{ ...persistedOn('output-1', MONITORS[0]), mode: 'projector-warp', warpId: id }],
+      }),
+    })
+
+    await manager.restoreOutputs()
+    fake.send(ready('output-1', 'projector-warp'))
+
+    const sent = configEmits(fake.emitted)[0].config
+    expect(sent.warp?.id).toBe(id)
+    expect(sent.warp?.meshes[0].viewport).toEqual({ x: 0, y: 0.5, w: 0.5, h: 0.5 })
+  })
+
+  it('restores an output whose set cannot be read as drawing nothing — and keeps the reference', async () => {
+    // A set a later build refuses is still the operator's calibration.
+    // Dropping the reference would let the next save stop naming it, and
+    // a deliberate removal would then delete it.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const missing = 'feedfacecafebeef'
+    const fake = createFakeHost()
+    const store = memoryStore({
+      autoRestoreOnLaunch: true,
+      outputs: [{ ...persistedOn('output-1', MONITORS[0]), mode: 'projector-warp', warpId: missing }],
+    })
+    const manager = makeManager(fake.host, { store })
+
+    await manager.restoreOutputs()
+    fake.send(ready('output-1', 'projector-warp'))
+
+    expect(configEmits(fake.emitted)[0].config.warp).toBeNull()
+    expect(store.current().outputs[0].warpId).toBe(missing)
+    warn.mockRestore()
+  })
+
+  it('refuses an oversized pick by its size, without reading a byte of it', async () => {
+    const { manager } = await warpOutput()
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(0))
+
+    const read = await manager.readWarpFiles([{ name: 'huge.zip', size: 64 * 1024 * 1024, arrayBuffer }])
+
+    expect(read).toMatchObject({ ok: false, refusal: { code: 'too-large' } })
+    expect(arrayBuffer).not.toHaveBeenCalled()
+  })
+
+  it('reads picked files into sources', async () => {
+    const { manager } = await warpOutput()
+    const bytes = new TextEncoder().encode(MESH)
+
+    const read = await manager.readWarpFiles([
+      { name: 'P2.data', size: bytes.length, arrayBuffer: async () => bytes.slice().buffer },
+    ])
+
+    expect(read.ok && read.sources.map(s => s.id)).toEqual(['P2'])
   })
 })

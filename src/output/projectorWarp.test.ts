@@ -4,8 +4,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { DEFAULT_BLEND_GAMMA } from '../services/multiOutput/protocol'
 import {
-  DEFAULT_BLEND_GAMMA,
   MAX_WARP_GRID,
   MAX_WARP_MESHES,
   SOS_QUADRANT_VIEWPORTS,

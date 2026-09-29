@@ -12,10 +12,14 @@
 
 import { describe, it, expect } from 'vitest'
 import {
+  DEFAULT_BLEND_GAMMA,
   DEFAULT_OUTPUT_MODE,
   OUTPUT_LABEL_PREFIX,
   OUTPUT_MODES,
+  defaultRenderConfig,
+  isBlendGamma,
   isOutputMode,
+  isWarpSetId,
   outputModeFromQuery,
   outputModeQuery,
   outputLabel,
@@ -27,9 +31,11 @@ import {
   IPC_ORPHAN_MS,
   type MirroredEquirectParams,
   type OutputGlobeState,
+  type OutputWarpMesh,
   type OutputStateMessage,
 } from './protocol'
 import { IDENTITY_PARAMS, type EquirectParams } from '../../output/equirectRtt'
+import { type WarpSetEntry } from '../../output/projectorWarp'
 
 describe('window labels', () => {
   it('mints 1-based labels matching the capability glob', () => {
@@ -185,5 +191,33 @@ describe('the equirect view is the shader’s own parameter object', () => {
     expect(view.split).toBe(false)
     expect(view.cameraOffset).toEqual({ x: 0, y: 0, z: 0 })
     expect(_bothWays).toEqual([true, true])
+  })
+})
+
+describe('a warp set crosses as the output\u2019s own set entries (rung 16)', () => {
+  // Both ways, for the reason the equirect params above are: the output
+  // hands `config.warp.meshes` straight to `placeWarpSet`.
+  type _WireIsEntry = OutputWarpMesh extends WarpSetEntry ? true : never
+  type _EntryIsWire = WarpSetEntry extends OutputWarpMesh ? true : never
+  const _bothWays: [_WireIsEntry, _EntryIsWire] = [true, true]
+
+  it('holds the proof, and opens with no set at the default gamma', () => {
+    expect(_bothWays).toEqual([true, true])
+    expect(defaultRenderConfig()).toMatchObject({ warp: null, blendGamma: DEFAULT_BLEND_GAMMA })
+    expect(DEFAULT_BLEND_GAMMA).toBe(2.2)
+  })
+
+  it('knows a content id when it sees one, and nothing else', () => {
+    expect(isWarpSetId('0123456789abcdef')).toBe(true)
+    for (const bad of ['0123456789ABCDEF', '0123456789abcde', '0123456789abcdef0', '../config', '', null, 7]) {
+      expect(isWarpSetId(bad)).toBe(false)
+    }
+  })
+
+  it('takes a blend gamma that can be one, and nothing else', () => {
+    for (const good of [2.2, 1, 0.8, 10]) expect(isBlendGamma(good)).toBe(true)
+    for (const bad of [0, -2.2, 10.5, Number.NaN, Number.POSITIVE_INFINITY, '2.2', null]) {
+      expect(isBlendGamma(bad)).toBe(false)
+    }
   })
 })

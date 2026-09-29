@@ -73,6 +73,7 @@ import {
   outputUvToLatLon,
   type Vec3,
 } from './equirectRtt'
+import { DEFAULT_BLEND_GAMMA } from '../services/multiOutput/protocol'
 
 /** One node as the file states it. */
 export interface WarpNode {
@@ -527,12 +528,6 @@ export function sampleWarpGeometry(geometry: WarpGeometry, clipX: number, clipY:
   return null
 }
 
-/**
- * The display gamma a blend weight is decoded and re-encoded through when
- * an output's own field says nothing. sphere-sim classes its photometry
- * provisional, which is why the field exists at all.
- */
-export const DEFAULT_BLEND_GAMMA = 2.2
 
 /**
  * What an encoded colour is multiplied by to apply a linear-light weight:

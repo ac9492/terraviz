@@ -43,6 +43,7 @@ function record(label: string, on: OutputMonitor): OutputRecord {
     lastEvent: null,
     departing: false,
     announcedClosing: false,
+    warpRef: null,
   }
 }
 

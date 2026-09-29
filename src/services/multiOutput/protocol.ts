@@ -596,6 +596,83 @@ export interface OutputRenderConfig {
    * and a graticule composited over a dataset leaves neither legible.
    */
   calibration: boolean
+  /**
+   * A `projector-warp` window's meshes and where each goes (rung 16), or
+   * `null` — which that window renders as nothing, and says so. Every
+   * other mode ignores it.
+   *
+   * On this channel rather than in `GlobeState` for the channel's own
+   * reason: it belongs to one window, and a rig's calibration is not a
+   * fact about the globe. Resent whole on every `output_ready` and every
+   * health-check resync, never in the heartbeat — so `id` exists, and the
+   * output compares it to decide whether its geometry needs rebuilding.
+   */
+  warp: OutputWarpSet | null
+  /**
+   * The display gamma a warp's blend weight is applied through (rung 16,
+   * convention 2). sphere-sim's weight multiplies radiance in *linear
+   * light*, and this window writes display-space values, so the weight
+   * reaches a pixel as `c · w^(1/γ)` — multiplying the encoded value
+   * instead leaves a band at 44% of target along every seam. Per output
+   * rather than per projector, because one rig's projectors are normally
+   * one model. Every other mode ignores it.
+   */
+  blendGamma: number
+}
+
+/**
+ * One mesh of a warp set as it crosses: the file's own text, and the
+ * rect of the framebuffer it goes in.
+ *
+ * The text rather than a parse, because the output re-reads it through
+ * the same fail-closed parser the import used — one parser, one set of
+ * refusals, wherever a set is read. Structurally identical to
+ * `projectorWarp`'s `WarpSetEntry`, deliberately, so the output hands
+ * these straight to `placeWarpSet`; `protocol.test.ts` proves the two
+ * stay assignable both ways, and it is declared here rather than
+ * imported because a contract must not depend on one of its consumers.
+ */
+export interface OutputWarpMesh {
+  id: string
+  /** Fractions of the framebuffer, origin bottom-left — GL's, and SOS's. */
+  viewport: { x: number; y: number; w: number; h: number }
+  text: string
+}
+
+export interface OutputWarpSet {
+  /** The set's content id — `warpImport.warpSetId`, and its storage key. */
+  id: string
+  meshes: OutputWarpMesh[]
+}
+
+/**
+ * Whether a string can be a warp set's content id: sixteen lowercase hex
+ * digits, which is what `warpSetId` writes. Checked wherever an id is
+ * read from outside — a stored reference, a storage key — so a hand-edited
+ * value cannot address a key the import never wrote.
+ */
+export function isWarpSetId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{16}$/.test(value)
+}
+
+/**
+ * The display gamma a warp's blend weight is decoded and re-encoded
+ * through when nobody has said otherwise. Here rather than beside
+ * `blendFactor` because both ends need it: the manager seeds a record
+ * with it and the output applies it. sphere-sim classes its photometry
+ * provisional, which is why this is a field at all.
+ */
+export const DEFAULT_BLEND_GAMMA = 2.2
+
+/**
+ * Whether a value can be a blend gamma: a finite number above zero, and
+ * no more than 10 — past which the weight is all but ignored and the
+ * value is more likely a slip than a calibration. Narrowing, for a value
+ * read from outside; `blendFactor` falls back to the default for
+ * anything else rather than drawing black.
+ */
+export function isBlendGamma(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 10
 }
 
 /**
@@ -617,7 +694,13 @@ export interface OutputRenderConfig {
  * indistinguishable from a real failure.
  */
 export function defaultRenderConfig(): OutputRenderConfig {
-  return { framebufferWidth: DEFAULT_FRAMEBUFFER_WIDTH, debugOverlay: false, calibration: false }
+  return {
+    framebufferWidth: DEFAULT_FRAMEBUFFER_WIDTH,
+    debugOverlay: false,
+    calibration: false,
+    warp: null,
+    blendGamma: DEFAULT_BLEND_GAMMA,
+  }
 }
 
 // --- Manager → output ---
