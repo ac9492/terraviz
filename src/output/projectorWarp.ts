@@ -375,11 +375,33 @@ function angleBetween(a: Vec3, b: Vec3): number {
   return Math.atan2(Math.hypot(cx, cy, cz), a.x * b.x + a.y * b.y + a.z * b.z)
 }
 
+/** Rounding slack for a viewport edge: SOS's quadrants meet at exactly 0.5. */
+const VIEWPORT_EPSILON = 1e-9
+
+function viewportInside({ x, y, w, h }: WarpViewport): boolean {
+  return (
+    [x, y, w, h].every(Number.isFinite) &&
+    x >= 0 &&
+    y >= 0 &&
+    w > 0 &&
+    h > 0 &&
+    x + w <= 1 + VIEWPORT_EPSILON &&
+    y + h <= 1 + VIEWPORT_EPSILON
+  )
+}
+
+/** Two rects sharing area, not merely an edge. */
+function viewportsOverlap(a: WarpViewport, b: WarpViewport): boolean {
+  return (
+    a.x < b.x + b.w - VIEWPORT_EPSILON &&
+    b.x < a.x + a.w - VIEWPORT_EPSILON &&
+    a.y < b.y + b.h - VIEWPORT_EPSILON &&
+    b.y < a.y + a.h - VIEWPORT_EPSILON
+  )
+}
+
 function assertViewport(viewport: WarpViewport, index: number): void {
-  const { x, y, w, h } = viewport
-  const inside =
-    [x, y, w, h].every(Number.isFinite) && x >= 0 && y >= 0 && w > 0 && h > 0 && x + w <= 1 + 1e-9 && y + h <= 1 + 1e-9
-  if (!inside) {
+  if (!viewportInside(viewport)) {
     throw new RangeError(`mesh ${index}: viewport ${JSON.stringify(viewport)} is not inside the framebuffer`)
   }
 }
@@ -571,4 +593,95 @@ export function sosQuadrantLayout(ids: readonly string[]): QuadrantLayoutResult 
   const duplicates = ids.filter((id, i) => ids.indexOf(id) !== i)
   if (duplicates.length > 0) return { ok: false, code: 'duplicate', ids: [...new Set(duplicates)] }
   return { ok: true, viewports: ids.map((id) => SOS_QUADRANT_VIEWPORTS[id as SosQuadrantId]) }
+}
+
+/**
+ * The most meshes one output carries. Past any rig one framebuffer can
+ * usefully be split for — sixty-four viewports leave each projector a
+ * raster smaller than it is — so the bound is against a file that is
+ * not a rig at all rather than against a large one.
+ */
+export const MAX_WARP_MESHES = 64
+
+const MAX_WARP_ID_LENGTH = 64
+/** C0 and C1 controls, both path separators, and the replacement character a bad decode leaves. */
+const WARP_ID_FORBIDDEN = /[\u0000-\u001f\u007f-\u009f/\\�]/
+
+/**
+ * Whether a string can name a projector. sphere-sim writes `P1`…`Pn`, or
+ * whatever id a placed projector was given, and it arrives through a file
+ * name — so the rule is what survives being one and being shown to an
+ * operator: printable, no separators, not blank-edged, not all dots.
+ */
+export function isWarpId(id: string): boolean {
+  return (
+    id.length > 0 &&
+    id.length <= MAX_WARP_ID_LENGTH &&
+    id.trim() === id &&
+    !/^\.+$/.test(id) &&
+    !WARP_ID_FORBIDDEN.test(id)
+  )
+}
+
+/** One mesh of a set as it is carried and stored: the file's own text, and where it was placed. */
+export interface WarpSetEntry {
+  readonly id: string
+  readonly viewport: WarpViewport
+  readonly text: string
+}
+
+/** Why a set was refused. The panel and the output's HUD word their own messages from `code`. */
+export type WarpSetRefusal =
+  | { readonly code: 'no-meshes' }
+  | { readonly code: 'too-many'; readonly count: number }
+  | { readonly code: 'bad-id'; readonly id: string }
+  /** Compared case-insensitively: `P1` and `p1` are one file on the disks they were extracted to. */
+  | { readonly code: 'duplicate-id'; readonly ids: readonly string[] }
+  | { readonly code: 'bad-viewport'; readonly id: string }
+  /** Two projectors cannot share framebuffer pixels: each pixel reaches one projector. */
+  | { readonly code: 'overlap'; readonly ids: readonly [string, string] }
+  | { readonly code: 'mesh'; readonly id: string; readonly mesh: WarpRefusal }
+
+export type WarpSetResult =
+  | { readonly ok: true; readonly placed: readonly PlacedWarpMesh[] }
+  | { readonly ok: false; readonly refusal: WarpSetRefusal }
+
+/**
+ * Check a whole set and parse every mesh in it, or refuse it whole.
+ *
+ * The one check a set passes wherever it is read — the manager on import
+ * and again on restore, and the output on receipt — so a set refused in
+ * one place is refused in all three, and none of them can hand
+ * `buildWarpGeometry` a viewport it would throw on. Whole, never in part:
+ * a rig missing one projector draws a picture with a hole where a quarter
+ * of the sphere should be, and a hole looks like a lamp failure rather
+ * than a refused file.
+ *
+ * `placed` is aligned with `entries`.
+ */
+export function placeWarpSet(entries: readonly WarpSetEntry[]): WarpSetResult {
+  const refuse = (refusal: WarpSetRefusal): WarpSetResult => ({ ok: false, refusal })
+  if (entries.length === 0) return refuse({ code: 'no-meshes' })
+  if (entries.length > MAX_WARP_MESHES) return refuse({ code: 'too-many', count: entries.length })
+  const bad = entries.find((e) => !isWarpId(e.id))
+  if (bad !== undefined) return refuse({ code: 'bad-id', id: bad.id })
+  const folded = entries.map((e) => e.id.toLowerCase())
+  const duplicates = entries.filter((_, i) => folded.indexOf(folded[i]) !== i).map((e) => e.id)
+  if (duplicates.length > 0) return refuse({ code: 'duplicate-id', ids: [...new Set(duplicates)] })
+  const outside = entries.find((e) => !viewportInside(e.viewport))
+  if (outside !== undefined) return refuse({ code: 'bad-viewport', id: outside.id })
+  for (let i = 0; i < entries.length; i++) {
+    for (let k = i + 1; k < entries.length; k++) {
+      if (viewportsOverlap(entries[i].viewport, entries[k].viewport)) {
+        return refuse({ code: 'overlap', ids: [entries[i].id, entries[k].id] })
+      }
+    }
+  }
+  const placed: PlacedWarpMesh[] = []
+  for (const { id, viewport, text } of entries) {
+    const parsed = parseWarpMesh(text)
+    if (!parsed.ok) return refuse({ code: 'mesh', id, mesh: parsed.refusal })
+    placed.push({ mesh: parsed.mesh, viewport })
+  }
+  return { ok: true, placed }
 }

@@ -7,19 +7,25 @@ import { resolve } from 'node:path'
 import {
   DEFAULT_BLEND_GAMMA,
   MAX_WARP_GRID,
+  MAX_WARP_MESHES,
   SOS_QUADRANT_VIEWPORTS,
   WIDE_TRIANGLE_FACTOR,
   blendFactor,
   buildWarpGeometry,
   directionToWarpUv,
+  isWarpId,
   meshToClip,
   nodeDirection,
   parseWarpMesh,
+  placeWarpSet,
   sampleWarpGeometry,
   sosQuadrantLayout,
+  type SosQuadrantId,
   type WarpGeometry,
   type WarpMesh,
   type WarpRefusal,
+  type WarpSetEntry,
+  type WarpSetRefusal,
   type WarpViewport,
 } from './projectorWarp'
 import { latLonToDirection, type Vec3 } from './equirectRtt'
@@ -398,6 +404,89 @@ describe('sosQuadrantLayout', () => {
   it('refuses two meshes for one quadrant, and an empty set', () => {
     expect(sosQuadrantLayout(['P1', 'P2', 'P1'])).toEqual({ ok: false, code: 'duplicate', ids: ['P1'] })
     expect(sosQuadrantLayout([])).toEqual({ ok: false, code: 'empty', ids: [] })
+  })
+})
+
+describe('isWarpId', () => {
+  it.each(['P1', 'P12', 'Projector 2', 'dome-east', 'Pé', 'a.b', 'x'.repeat(64)])('accepts %j', (id) => {
+    expect(isWarpId(id)).toBe(true)
+  })
+
+  it.each(['', ' P1', 'P1 ', '﻿P1', '.', '..', 'a/b', 'a\\b', 'P\u0000', 'P\u0085', 'P�', 'x'.repeat(65)])(
+    'refuses %j',
+    (id) => {
+      expect(isWarpId(id)).toBe(false)
+    },
+  )
+})
+
+describe('placeWarpSet', () => {
+  const mesh = gridText(3, 3, smooth)
+  const entry = (id: SosQuadrantId, text = mesh): WarpSetEntry => ({ id, viewport: SOS_QUADRANT_VIEWPORTS[id], text })
+  const refusal = (entries: readonly WarpSetEntry[]): WarpSetRefusal => {
+    const result = placeWarpSet(entries)
+    if (result.ok) throw new Error('placed; a refusal was expected')
+    return result.refusal
+  }
+
+  it('parses every mesh and keeps each with its viewport, in order', () => {
+    const result = placeWarpSet([entry('P3', fixture('boulder-P3.data')), entry('P1'), entry('P4'), entry('P2')])
+    if (!result.ok) throw new Error(JSON.stringify(result.refusal))
+    expect(result.placed.map((p) => p.viewport)).toEqual([
+      SOS_QUADRANT_VIEWPORTS.P3,
+      SOS_QUADRANT_VIEWPORTS.P1,
+      SOS_QUADRANT_VIEWPORTS.P4,
+      SOS_QUADRANT_VIEWPORTS.P2,
+    ])
+    expect(result.placed[0].mesh.cols).toBe(41)
+    // What it accepts, the geometry build draws without throwing.
+    expect(buildWarpGeometry(result.placed).meshes).toHaveLength(4)
+  })
+
+  it('accepts viewports that share an edge, and a single mesh over the whole window', () => {
+    expect(placeWarpSet([entry('P1'), entry('P2'), entry('P3'), entry('P4')]).ok).toBe(true)
+    // Whichever side of the shared edge comes first.
+    expect(placeWarpSet([entry('P4'), entry('P3'), entry('P2'), entry('P1')]).ok).toBe(true)
+    expect(placeWarpSet([{ id: 'only', viewport: FULL, text: mesh }]).ok).toBe(true)
+  })
+
+  it('refuses an empty set, and more meshes than an output carries', () => {
+    expect(refusal([])).toEqual({ code: 'no-meshes' })
+    const many = Array.from({ length: MAX_WARP_MESHES + 1 }, (_, i) => ({
+      id: `P${i}`,
+      viewport: { x: i / (MAX_WARP_MESHES + 1), y: 0, w: 1 / (MAX_WARP_MESHES + 1), h: 1 },
+      text: mesh,
+    }))
+    expect(refusal(many)).toEqual({ code: 'too-many', count: MAX_WARP_MESHES + 1 })
+  })
+
+  it('refuses an id that cannot be one, and ids that fold together', () => {
+    expect(refusal([{ id: 'a/b', viewport: FULL, text: mesh }])).toEqual({ code: 'bad-id', id: 'a/b' })
+    expect(refusal([entry('P1'), { ...entry('P2'), id: 'p1' }])).toEqual({ code: 'duplicate-id', ids: ['p1'] })
+  })
+
+  it('refuses a viewport outside the framebuffer, or with no area', () => {
+    const at = (viewport: WarpViewport): WarpSetRefusal => refusal([{ id: 'P1', viewport, text: mesh }])
+    expect(at({ x: 0.6, y: 0, w: 0.5, h: 1 })).toEqual({ code: 'bad-viewport', id: 'P1' })
+    expect(at({ x: -0.1, y: 0, w: 0.5, h: 1 })).toEqual({ code: 'bad-viewport', id: 'P1' })
+    expect(at({ x: 0, y: 0, w: 0, h: 1 })).toEqual({ code: 'bad-viewport', id: 'P1' })
+    expect(at({ x: Number.NaN, y: 0, w: 0.5, h: 1 })).toEqual({ code: 'bad-viewport', id: 'P1' })
+  })
+
+  it('refuses two projectors sharing framebuffer pixels', () => {
+    const left: WarpSetEntry = { id: 'L', viewport: { x: 0, y: 0, w: 0.6, h: 1 }, text: mesh }
+    const right: WarpSetEntry = { id: 'R', viewport: { x: 0.5, y: 0, w: 0.5, h: 1 }, text: mesh }
+    expect(refusal([left, right])).toEqual({ code: 'overlap', ids: ['L', 'R'] })
+    expect(refusal([entry('P1'), { id: 'all', viewport: FULL, text: mesh }])).toEqual({ code: 'overlap', ids: ['P1', 'all'] })
+  })
+
+  it('refuses the whole set for one mesh that does not parse, naming it', () => {
+    const truncated = mesh.split('\n').slice(0, 6).join('\n')
+    expect(refusal([entry('P1'), entry('P2', truncated)])).toMatchObject({
+      code: 'mesh',
+      id: 'P2',
+      mesh: { code: 'node-count' },
+    })
   })
 })
 

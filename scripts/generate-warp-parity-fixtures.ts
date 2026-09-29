@@ -108,7 +108,7 @@ async function main(): Promise<void> {
   const commit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
 
   const { BOULDER_PRESET } = await load<{ BOULDER_PRESET: unknown }>('packages/web/src/settings.ts')
-  const { buildWorld } = await load<{ buildWorld(p: unknown): { compositorRig: unknown } }>(
+  const { buildWorld } = await load<{ buildWorld(p: unknown): { compositorRig: unknown; truthRig: unknown } }>(
     'packages/web/src/rigs.ts',
   )
   const { prepareRig, pixelToRay } = await load<{
@@ -117,7 +117,7 @@ async function main(): Promise<void> {
   }>('packages/sim/src/optics.ts')
   const { placedRig } = await load<{ placedRig(p: unknown): unknown }>('packages/sim/src/placement.ts')
   const { buildWarpExports, formatWarpMesh } = await load<{
-    buildWarpExports(r: SphereSimRig): SphereSimExport[]
+    buildWarpExports(r: SphereSimRig, options?: { cols?: number; rows?: number }): SphereSimExport[]
     formatWarpMesh(w: SphereSimExport): string
   }>('packages/sim/src/warp.ts')
   const { worldLonToTextureLon } = await load<{ worldLonToTextureLon(lon: number, off: number): number }>(
@@ -291,6 +291,46 @@ async function main(): Promise<void> {
     '[$1, $2, $3, $4]',
   )
   writeFileSync(join(OUT_DIR, 'parity.json'), `${json}\n`)
+
+  // A whole bundle as sphere-sim's page writes one, for the ZIP reader:
+  // its own `bundleEntries` and `buildZip`, at a coarse grid so the archive
+  // is a few kilobytes — what it tests is the container, not the mesh. It
+  // carries a restore point holding an OLDER `warp/P1.data`, a 4×4 export,
+  // which is the one entry a careless reader would take for a mesh: the
+  // same format under the same file name, one directory down.
+  const { buildSosAlignments, formatSosAlignment } = await load<{
+    buildSosAlignments(truth: SphereSimRig, compositor: SphereSimRig): { projectorId: string; alignment: unknown }[]
+    formatSosAlignment(a: unknown): string
+  }>('packages/sim/src/sos.ts')
+  const { bundleEntries } = await load<{ bundleEntries(input: unknown): unknown[] }>('packages/web/src/bundle.ts')
+  const { buildZip } = await load<{ buildZip(entries: unknown[]): Uint8Array }>('packages/web/src/zip.ts')
+  const { planRestore } = await load<{
+    planRestore(targets: { path: string; kind: string }[], held: { path: string; bytes: Uint8Array }[]): unknown
+  }>('packages/web/src/restore.ts')
+  const world = buildWorld(BOULDER_PRESET)
+  const truthRig = prepareRig(world.truthRig)
+  const contentRig = prepareRig(world.compositorRig)
+  const warp = buildWarpExports(contentRig, { cols: 5, rows: 5 }).map((e) => [e.projectorId, formatWarpMesh(e)] as const)
+  const alignment = buildSosAlignments(truthRig, contentRig).map(
+    (e) => [e.projectorId, formatSosAlignment(e.alignment)] as const,
+  )
+  const older = formatWarpMesh(buildWarpExports(contentRig, { cols: 4, rows: 4 })[0])
+  const targets = [
+    ...warp.map(([id]) => ({ path: `warp/${id}.data`, kind: 'warp' })),
+    ...alignment.map(([id]) => ({ path: `alignment/${id}.alignment`, kind: 'alignment' })),
+  ]
+  const restore = planRestore(targets, [{ path: 'warp/P1.data', bytes: new TextEncoder().encode(older) }])
+  const entries = bundleEntries({
+    warp,
+    alignment,
+    config: null,
+    configName: 'local_sos_config.json',
+    alignmentCost: '',
+    rigSummary: `${warp.length} projectors, as the install describes them.`,
+    restore,
+  })
+  writeFileSync(join(OUT_DIR, 'sphere-sim-bundle.zip'), buildZip(entries))
+  console.log(`bundle: ${entries.length} entries, ${warp.length} meshes at 5x5, an older P1 at 4x4 under restore/`)
   console.log(`wrote ${OUT_DIR} (sphere-sim ${commit.slice(0, 7)})`)
 }
 

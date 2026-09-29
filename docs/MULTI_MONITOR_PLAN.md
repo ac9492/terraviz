@@ -3084,7 +3084,7 @@ without rolling the whole feature back.
 | 13 | `multi-output: failure recovery — crashes, stalls, GPU loss, monitor unplug` | Manager gains crash detection (no-graceful-close window destroy → toast + record removal), 3-strikes-per-monitor crash storm guard, 2 s `availableMonitors()` poll for unplug detection, `getAll()` boot scan to reattach orphaned `output-*` windows after a control-window **page reload or webview failure** — not a crash of the process, which takes every window with it; see case 6, which corrects this. Output gains `webglcontextlost` / `webglcontextrestored` listeners with full scene rebuild, IPC-silence watchdog (5 s → stale state, 60 s → orphan), one HLS stream rebuild on a `loadStream()` rejection with frozen last-good-frame (no retry ladder — `hlsService` already spends a 3× budget before rejecting). Outputs panel renders per-output health badges (healthy / stale / stalled / monitor-missing). New Tier A `output_failure` event fired from manager via `analytics/emitter.ts` with `{ kind, retries, recovered }` (Open Question 3 decided). See §3 "Failure recovery". **Landed so far: 13a** (crash-vs-hand-close classification, the storm guard, record removal, `onOutputsChanged` for the panel), **13b** (all three Tier A events, `outputTelemetry.ts`), **case 3** (the output's `linkWatchdog`, the manager's `output_health_check` resync, the panel's stale badge and its announcement) and **case 6** (`adoptOrphanedOutputs`, `OUTPUT_REATTACH_EVENT`, chained ahead of the restore at boot) and **case 5's detection and reporting** (`outputScene.gpuState()`, `output_gpu_lost` / `output_gpu_recovered`, the `gpu-lost` badge and the `gpu-loss` Tier A failure — much smaller than this row implied, because Three's `WebGLRenderer` already does the `preventDefault()` and the GL rebuild; see case 5). Still open: the unplug poll, the single HLS rebuild, case 5's 30 s no-restore timeout and its `gpu-loss-timeout` removal, the toast (no toast primitive exists), and the `perf_sample` extension (needs an `OutputEvent` arm carrying drift — see Open Question 3). | Yes (additive) |
 | 14 | `multi-output: calibration tooling — test pattern + rotation offset` | `src/output/datasetMirror.ts` recognises the `__terraviz_calibration__` sentinel id and renders a procedural test pattern (8-step grayscale ramp at the equator, RGB color bars at lat ±30°, lat/lon graticule with color-coded equator + prime meridian, named anchor crosshairs, N/S pole labels, live resolution counter — ~80 LOC GLSL). `src/output/equirectRtt.ts` adds the `uRotationOffsetRad` longitude rotation applied before the camera-offset ray-march. `outputUI.ts` adds the per-output "Rotation offset (°)" numeric + slider and a "Calibration" submenu. Persisted config gains `rotationOffsetDeg`. See §3 "Calibration tooling". **Landed, in two slices, and the second is built differently from this row.** **14a** is the rotation offset end to end: `uRotationOffsetRad` and its TS mirror, `rotationOffsetDeg` through `OutputViewSettings` and the persisted config, the degrees→radians conversion in `projectView`, and the panel's slider-plus-number. **14b** is the test pattern, as `src/output/calibrationPattern.ts` — a **2:1 canvas installed in an ordinary overlay slot**, not the ~80 LOC of GLSL this row specifies, and a **per-output switch on the render-config channel**, not the `__terraviz_calibration__` sentinel dataset. Both departures are argued at the top of §3 "Calibration tooling": a shader pattern would bypass the very sampling path it is meant to prove, and a sentinel dataset would put the pattern on every output at once — plus on the control window's own globe, which is where the operator is reading the rotation they are turning. There is no "Calibration submenu"; it is one toggle sitting directly above the rotation control it is used with. The pattern is the one operator choice in the panel that deliberately does **not** persist. | Yes (additive) |
 | 15 | `multi-output: operator runbook` | **Landed** — [`docs/MULTI_MONITOR_OPERATIONS.md`](MULTI_MONITOR_OPERATIONS.md), the deployment half this plan had deferred, and which a spike showed is not optional. It covers everything below and four things the ladder could not have predicted, all of them from hardware and all of them **silent** failures: the **gpu** field being unreadable on Linux (so §1.1's check moves outside the app, on the platform SOS installations most often run), the output monitor's **refresh rate** as a hard ceiling on its frame rate with a dock as the usual cause, and two Linux package prerequisites — GStreamer codecs, without which no HLS dataset plays, and fonts in two classes, without which every control renders as an empty box. Originally scoped as: Covers: **checking which GPU the webview actually got** (the renderer string surfaced by commit 11's debug overlay) and the per-OS override for a hybrid-graphics machine, since the app's own `powerPreference` is inert and a silent landing on the iGPU is undiagnosable from logs; **measuring this machine's decoder budget** rather than trusting a constant, and entering it in the Outputs panel's budget field (commit 11); disabling screen savers and display sleep (Open Question 5's documented half); the kiosk autostart entry from §3.6; and what each Outputs-panel health badge means in front of an audience. No code. | **Yes** (docs) |
-| 16 | `multi-output: projector-warp mode (sphere-sim warp import)` | **In progress** — the pure module landed 2026-09-29 (`src/output/projectorWarp.ts`: fail-closed parse, geometry build, blend, SOS's quadrant table, and a parity fixture from sphere-sim's own tracer); the mode, channel, scene and panel are not built. Specified in §"Rung 16 — a sphere-sim warp bundle on one output", which opens roadmap Phase 3's sphere half now that its demand gate is met. One output on the spanned display carries a sphere-sim bundle's Bourke meshes, each placed in its viewport of the one framebuffer and drawn in one pass, so the projectors share one decoder and one swap and cannot drift apart at the seams. A new `projector-warp` mode rather than a flag, so a build without this rung refuses to spawn one instead of throwing an unwarped equirect across calibrated projectors. The ray-march runs per fragment — no render target, no second resample — at a unit direction the mesh interpolates in place of `(u, v)`, which takes the texture seam and the poles without a special case and, measured against sphere-sim's own tracer, matches `(u, v)` interpolation wherever that works. Three conventions that fail silently were measured against sphere-sim's own export and are specified there: the seam and the poles, a linear-light blend weight arriving at a display-space renderer, and a sphere rig's rotation already baked into the mesh, which is why rung 14a's offset becomes a content rotation under a warp and is never seeded from the rig. Not SOS-specific: any rig sphere-sim calibrates arrives in the same shape, on the sphere or on any surface unwrapped equirectangularly — a dome, an ellipsoid; only a model whose UV set is an atlas is out. A mesh is never placed by its projector id alone, because sphere-sim's placed rigs reuse SOS's ids in other places: the layout comes from the bundle, or from the operator explicitly choosing SOS's quadrants, or the import refuses. So an SOS rig is unblocked upstream and any other rig needs [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49) (the layout in the bundle); [zyra-project/sphere-sim#50](https://github.com/zyra-project/sphere-sim/issues/50) (the blend convention stated in `warp.ts`) makes every rig safer. | Yes (additive) |
+| 16 | `multi-output: projector-warp mode (sphere-sim warp import)` | **In progress** — the pure module landed 2026-09-29 (`src/output/projectorWarp.ts`: fail-closed parse, geometry build, blend, SOS's quadrant table, the whole-set check, and a parity fixture from sphere-sim's own tracer), and the import with it (`storedZip`, `warpImport`: a store-only ZIP reader that takes only the root's `warp/<id>.data`, since a bundle's restore point keeps the previous calibration under the same name); the mode, channel, storage, scene and panel are not built. Specified in §"Rung 16 — a sphere-sim warp bundle on one output", which opens roadmap Phase 3's sphere half now that its demand gate is met. One output on the spanned display carries a sphere-sim bundle's Bourke meshes, each placed in its viewport of the one framebuffer and drawn in one pass, so the projectors share one decoder and one swap and cannot drift apart at the seams. A new `projector-warp` mode rather than a flag, so a build without this rung refuses to spawn one instead of throwing an unwarped equirect across calibrated projectors. The ray-march runs per fragment — no render target, no second resample — at a unit direction the mesh interpolates in place of `(u, v)`, which takes the texture seam and the poles without a special case and, measured against sphere-sim's own tracer, matches `(u, v)` interpolation wherever that works. Three conventions that fail silently were measured against sphere-sim's own export and are specified there: the seam and the poles, a linear-light blend weight arriving at a display-space renderer, and a sphere rig's rotation already baked into the mesh, which is why rung 14a's offset becomes a content rotation under a warp and is never seeded from the rig. Not SOS-specific: any rig sphere-sim calibrates arrives in the same shape, on the sphere or on any surface unwrapped equirectangularly — a dome, an ellipsoid; only a model whose UV set is an atlas is out. A mesh is never placed by its projector id alone, because sphere-sim's placed rigs reuse SOS's ids in other places: the layout comes from the bundle, or from the operator explicitly choosing SOS's quadrants, or the import refuses. So an SOS rig is unblocked upstream and any other rig needs [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49) (the layout in the bundle); [zyra-project/sphere-sim#50](https://github.com/zyra-project/sphere-sim/issues/50) (the blend convention stated in `warp.ts`) makes every rig safer. | Yes (additive) |
 
 **Backout plan.** Reverting commit 9 leaves all the plumbing in
 place (manager, output bundle, capability) but removes the
@@ -3527,10 +3527,12 @@ becomes additive rather than a rewrite.
 
 ### Rung 16 — a sphere-sim warp bundle on one output
 
-**Status: in progress — the pure module is built (2026-09-29), the
-rest is not.** The geometry build, fail-closed parse and blend are
-`src/output/projectorWarp.ts`, held to sphere-sim's own tracer by a
-parity fixture (§"Verification"); the mode, the render-config channel,
+**Status: in progress — the pure module and the import are built
+(2026-09-29), the rest is not.** The geometry build, fail-closed parse
+and blend are `src/output/projectorWarp.ts`, held to sphere-sim's own
+tracer by a parity fixture (§"Verification"); the ZIP reader and the
+set's assembly are `storedZip` and `warpImport` (§"Where the meshes
+live"). The mode, the render-config channel, the manager's storage,
 the scene, the panel and the runbook section are still to come.
 Written 2026-09-26 against sphere-sim
 `main` at `40a51dd`, after the operator who owns the deployment asked
@@ -3551,10 +3553,22 @@ sphere-sim's export is one ZIP: `warp/<id>.data`, one Bourke type-2
 mesh per lit projector; `alignment/<id>.alignment`, the same
 correction squeezed into SOS's nine-point format; the patched
 `local_sos_config.json`, only when the operator loaded one to patch;
-and a README. Only the first concerns this rung. The alignment files
+a README; and `restore/`, a restore point. Only the first concerns
+this rung. The alignment files
 are lossy by sphere-sim's own account — no blend column, nine control
 points — and describe a residual against SOS's renderer rather than a
 content map.
+
+**The restore point is a trap for a careless reader** — corrected
+2026-09-29, since this section first listed four kinds of entry and
+the ZIP holds five. `restore/` keeps, byte for byte, each file the
+install would overwrite that the operator loaded into the page, and
+that can include `restore/warp/<id>.data`: the *previous* calibration,
+in the same format and under the same file name, one directory down. A
+reader matching on the file name, or on any path ending `.data`,
+imports the old calibration as the new one, or refuses the pair as
+duplicates, depending on entry order. So the import reads
+`warp/<id>.data` **at the archive's root** and nothing else.
 
 A mesh is `2`, then `cols rows`, then one `x y u v i` line per node,
 row-major. `x` spans ±the projector's aspect and `y` spans ±1, y up;
@@ -3804,6 +3818,27 @@ reaches `framebufferWidths()`: every `multiOutput/` import in
 the contract back into the web entry graph. The import accepts the ZIP
 as sphere-sim writes it — store-only, so the reader is a page of code
 and no dependency — or a multi-select of `.data` files.
+
+**Built, 2026-09-29**: `storedZip` reads the container and
+`warpImport` turns what was picked into a set, in two steps because
+the panel asks its layout question between them. The reader checks
+every entry's CRC-32 rather than trusting it, since a byte flipped
+inside a coordinate still parses. It refuses a *compressed* entry per
+entry and on read, rather than refusing the whole archive: an operator
+who re-zipped the extracted bundle gets deflate everywhere and is told
+to pick the `.data` files instead, while a recompressed README cannot
+make the meshes beside it unreadable. A mix of archive and loose
+meshes is refused, not settled by whichever the reader saw first. Ids
+are compared for duplicates case-insensitively, since `P1` and `p1`
+are one file on the disks they are extracted to. The set's check —
+ids, viewports inside the framebuffer and sharing no pixels, every
+mesh through the one parse — is `projectorWarp.placeWarpSet`, which
+the restore and the output's receipt call too. The set's id is 64 bits
+of FNV-1a and CRC-32 over the meshes and their placement, in id order,
+and it is synchronous because it keys storage. Without `crypto.subtle`,
+the app's other hash degrades to a shared placeholder. The fixture is
+a real bundle from sphere-sim's own `bundleEntries` and `buildZip`,
+restore point included.
 
 #### Three conventions that fail silently
 
