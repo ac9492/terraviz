@@ -28,7 +28,7 @@ describe('STAC traversal and reachability audit', () => {
         if (url.origin === 'https://data.example') return new Response(null, { headers: { 'Content-Type': 'image/png' } })
         throw new Error('Unexpected URL')
       })
-      const report = await auditStac({ root: 'https://node.example/api/v1/stac', allowedOrigins: ['https://data.example'], fetchImpl })
+      const report = await auditStac({ root: 'https://node.example/api/v1/stac', allowedOrigins: ['https://data.example', new URL(schema.$id).origin], fetchImpl })
       expect(report.ok).toBe(!failNext)
       if (failNext) expect(report.issues).toEqual([
         expect.objectContaining({ code: 'document_http_503' }), expect.objectContaining({ code: 'document_http_503' }),
@@ -73,11 +73,27 @@ describe('STAC traversal and reachability audit', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
+  it.each([false, true])('requires explicit upstream-origin trust on a fork (configured=%s)', async configured => {
+    const upstream = new URL(schema.$id).origin
+    const asset = `${upstream}/image.png`
+    const fetchImpl = vi.fn<typeof fetch>(async input => String(input) === root
+      ? Response.json(catalog([{ rel: 'related', href: asset, type: 'image/png' }], {
+        stac_extensions: [schema.$id], assets: { data: { href: asset, type: 'image/png' } },
+      })) : String(input) === schema.$id ? Response.json(schema)
+        : new Response(null, { headers: { 'Content-Type': 'image/png' } }))
+    const report = await auditStac({ root, fetchImpl, allowedOrigins: configured ? [upstream] : [] })
+    expect(report.ok).toBe(configured)
+    expect(fetchImpl).toHaveBeenCalledTimes(configured ? 3 : 1)
+    if (!configured) expect(report.issues.map(issue => issue.code)).toEqual([
+      'invalid_or_untrusted_link', 'unsafe_or_untrusted_asset', 'invalid_or_untrusted_schema',
+    ])
+  })
+
   it('reports wrong media types and missing schema identities', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async input => String(input) === root
       ? Response.json(catalog([], { stac_extensions: [schema.$id], assets: { data: { href: `${root}/image`, type: 'image/png' } } }))
       : String(input) === schema.$id ? Response.json({}) : new Response(null, { headers: { 'Content-Type': 'text/html' } }))
-    const report = await auditStac({ root, fetchImpl })
+    const report = await auditStac({ root, fetchImpl, allowedOrigins: [new URL(schema.$id).origin] })
     expect(report.issues.map(issue => issue.code)).toEqual(expect.arrayContaining(['schema_identity', 'terraviz_schema_drift', 'asset_media_type']))
   })
 

@@ -10,6 +10,8 @@ import schema from '../../../../docs/metadata/schemas/terraviz-v1.0.0.json'
 import { stacRouteFixture } from '../_lib/stac-test-helpers'
 import { readStacPublicationInput } from '../_lib/stac-publication-store'
 import { readStacPublication } from '../_lib/stac-publication'
+import { verifyStacAssets } from '../_lib/stac-assets'
+import * as snapshot from '../_lib/snapshot'
 import type { StacCatalog, StacCollection, StacItem, StacLink } from '../_lib/stac-types'
 
 describe('STAC public routes', () => {
@@ -51,6 +53,54 @@ describe('STAC public routes', () => {
     } finally { sqlite.close() }
   })
 
+  it.each([[6, 2800], [40, 400]])('verifies %s healthy assets at %sms latency within the deadline', async (count, latency) => {
+    const { sqlite, ids, env } = stacRouteFixture(count)
+    let active = 0
+    let peak = 0
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(), milliseconds)
+      return controller.signal
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      active++
+      peak = Math.max(peak, active)
+      await new Promise(resolve => setTimeout(resolve, latency))
+      active--
+      return new Response(null, { headers: { 'Content-Type': 'image/png' } })
+    }))
+    try {
+      for (const id of ids) sqlite.prepare('UPDATE datasets SET data_ref=?, thumbnail_ref=? WHERE id=?')
+        .run(`url:https://data.example/${id}.png`, `https://data.example/${id}.png`, id)
+      const model = await readStacPublicationInput(env.CATALOG_DB)
+      vi.useFakeTimers()
+      const pending = verifyStacAssets(env, model)
+      await vi.advanceTimersByTimeAsync(14000)
+      const result = await pending
+      expect(result.budgetExhausted).toBe(false)
+      expect(result.issues.size).toBe(0)
+      expect(result.assets.size).toBe(count * 2)
+      expect(fetch).toHaveBeenCalledTimes(count)
+      expect(peak).toBe(Math.min(count, 16))
+    } finally { vi.useRealTimers(); timeout.mockRestore(); sqlite.close() }
+  })
+
+  it('records individual probe failures without aborting queued healthy assets', async () => {
+    const { sqlite, ids, env } = stacRouteFixture(20)
+    vi.stubGlobal('fetch', vi.fn(async (href: string) => {
+      if (href.endsWith(`${ids[0]}.png`)) throw new Error('Origin unavailable')
+      return new Response(null, { headers: { 'Content-Type': 'image/png' } })
+    }))
+    try {
+      for (const id of ids) sqlite.prepare('UPDATE datasets SET data_ref=? WHERE id=?').run(`url:https://data.example/${id}.png`, id)
+      const result = await verifyStacAssets(env, await readStacPublicationInput(env.CATALOG_DB))
+      expect(result.budgetExhausted).toBe(false)
+      expect(fetch).toHaveBeenCalledTimes(20)
+      expect(result.assets.size).toBe(19)
+      expect(result.issues.get(`url:https://data.example/${ids[0]}.png`)).toBe('asset_probe_failed')
+    } finally { sqlite.close() }
+  })
+
   it('fails the whole publication when an optional asset exceeds the probe budget', async () => {
     const { sqlite, ids, env } = stacRouteFixture(40)
     try {
@@ -78,6 +128,25 @@ describe('STAC public routes', () => {
       expect(response.headers.get('cache-control')).toBe('no-store')
       expect(env.CATALOG_KV.put).not.toHaveBeenCalled()
     } finally { spy.mockRestore(); sqlite.close() }
+  })
+
+  it.each(['prose', 'unreachable', 'available'])('distinguishes %s license evidence in the operator report', async mode => {
+    const { sqlite, ids, env } = stacRouteFixture()
+    const licenseUrl = 'https://data.example/license.txt'
+    vi.stubGlobal('fetch', vi.fn(async (href: string) => href === licenseUrl
+      ? new Response(null, { status: mode === 'unreachable' ? 404 : 200, headers: { 'Content-Type': 'text/plain' } })
+      : new Response(null, { headers: { 'Content-Type': 'image/png' } })))
+    try {
+      sqlite.prepare('UPDATE datasets SET license_spdx=NULL, license_statement=?, license_url=?')
+        .run('Use for education only', mode === 'prose' ? null : licenseUrl)
+      const publication = await readStacPublication(env, { operatorReport: true })
+      expect(publication.report[0]).toMatchObject({ id: ids[0], included: mode === 'available' })
+      if (mode !== 'available') expect(publication.report[0].reasons)
+        .toEqual([mode === 'prose' ? 'license_text_asset_pending' : 'license_asset_unresolved'])
+      else expect(publication.products[0].collection!.links).toContainEqual(expect.objectContaining({ rel: 'license', href: licenseUrl }))
+      expect(fetch).toHaveBeenCalledTimes(mode === 'prose' ? 1 : 2)
+      expect(fetch).not.toHaveBeenCalledWith('Use for education only', expect.anything())
+    } finally { sqlite.close() }
   })
 
   it('verifies and publishes a trusted colour-table asset', async () => {
@@ -275,6 +344,39 @@ describe('STAC public routes', () => {
     } finally { sqlite.close() }
   })
 
+  it('separates public and operator cache identities even with identical public rows', async () => {
+    const { sqlite, env } = stacRouteFixture()
+    const hash = vi.spyOn(snapshot, 'computeEtag')
+    try {
+      await readStacPublication(env)
+      const publicSeed = hash.mock.calls[0][0]
+      vi.mocked(env.CATALOG_KV.get).mockClear()
+      vi.mocked(env.CATALOG_KV.put).mockClear()
+      await readStacPublication(env, { operatorReport: true })
+      const operatorSeed = hash.mock.calls[1][0]
+      expect(JSON.parse(publicSeed).model).toEqual(JSON.parse(operatorSeed).model)
+      expect(JSON.parse(publicSeed).operatorReport).toBe(false)
+      expect(JSON.parse(operatorSeed).operatorReport).toBe(true)
+      expect(await snapshot.computeEtag(publicSeed)).not.toBe(await snapshot.computeEtag(operatorSeed))
+      expect(env.CATALOG_KV.get).not.toHaveBeenCalled()
+      expect(env.CATALOG_KV.put).not.toHaveBeenCalled()
+    } finally { hash.mockRestore(); sqlite.close() }
+  })
+
+  it('logs catalog failure reasons without exposing them in the public response', async () => {
+    const { sqlite, env } = stacRouteFixture()
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      sqlite.exec("UPDATE node_identity SET display_name=''")
+      const response = await onRequestGet(makeCtx({ env, url: 'https://node.example/api/v1/stac' }) as never)
+      expect(response.status).toBe(503)
+      expect(response.headers.get('cache-control')).toBe('no-store')
+      expect(await response.json()).toEqual({ error: 'stac_unavailable' })
+      expect(log).toHaveBeenCalledWith('[stac] publication failed', 'Invalid STAC catalog: node_identity_invalid')
+      expect(env.CATALOG_KV.put).not.toHaveBeenCalled()
+    } finally { log.mockRestore(); sqlite.close() }
+  })
+
   it('never serves a previously cached response when the fresh database read fails', async () => {
     const { sqlite, env } = stacRouteFixture()
     try {
@@ -397,6 +499,14 @@ describe('STAC public routes', () => {
       expect(disabled.headers.has('link')).toBe(false)
       expect(enabled.headers.get('link')).toContain('https://node.example/api/v1/stac')
       expect(await enabled.json()).toEqual(await disabled.json())
+      for (const response of [disabled, enabled]) {
+        expect(response.headers.get('cache-control')).toBe('public, max-age=300, stale-while-revalidate=600')
+      }
+      const conditional = await discoveryGet(makeCtx({ env: { ...env, STAC_ENABLED: 'true' },
+        headers: { 'if-none-match': enabled.headers.get('etag')! } }) as never)
+      expect(conditional.status).toBe(304)
+      expect(conditional.headers.get('link')).toBe(enabled.headers.get('link'))
+      expect(conditional.headers.get('cache-control')).toBe(enabled.headers.get('cache-control'))
     } finally { sqlite.close() }
   })
   it('publishes an identity-only Catalog and uses its own KV namespace', async () => {

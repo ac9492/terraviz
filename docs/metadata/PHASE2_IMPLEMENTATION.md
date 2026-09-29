@@ -1,7 +1,7 @@
 # Phase 2: Browsable Core Resources
 
 **Status:** Implemented; deployment opt-in required
-**Last reviewed:** 2026-09-19
+**Last reviewed:** 2026-09-29
 **Revisit when:** Public profile snapshots, custom registry storage or immutable history ships.
 
 | Step | Implementation |
@@ -26,6 +26,10 @@
 4. Set `STAC_ENABLED=true` only after these prerequisites. HTTP `Link` discovery
    on the well-known response is enabled together with the resource routes.
    The well-known JSON and native protocol schemas remain unchanged.
+   Discovery retains its five-minute cache and ten-minute stale-while-revalidate
+   window, including on conditional responses. An opt-in or base-URL change may
+   therefore take that window to appear in cached discovery; the STAC routes
+   themselves check the flag on every request.
    Set `STAC_ASSET_ORIGINS` to a comma-separated list of trusted exact HTTPS
    origins for direct assets, license text and branding. The configured public
    R2 origin is also trusted. Only name public hosts you control or explicitly
@@ -60,7 +64,9 @@ STAC uses `stac:publication:v1:<input-hash>` KV keys, separate from native
 snapshots. Fresh D1 state is required on every request before any KV reuse;
 HTTP responses require revalidation, never stale-while-revalidate. KV outages
 are cache misses. Input hashing includes identity, all dataset inputs, public
-branding and public R2 configuration. Old keys expire after five minutes and
+branding, public R2 configuration, trusted asset origins and the operator-report
+flag. Public and operator inputs cannot share a key even when their rows match;
+the operator path still never reads or writes KV. Old keys expire after five minutes and
 are unreachable after an input change, even if KV deletion is delayed. This
 trades D1 reads for immediate access/branding invalidation; it does not claim
 the native catalog's KV-only hot-path performance.
@@ -83,6 +89,13 @@ cannot be reused. The operator report remains available with a publication-level
 budget reason. Individual unverifiable assets, including HEAD-unsupported
 servers, are still withheld rather than advertised speculatively. Colour-table
 references are verified alongside primary media and the other supporting assets.
+References are resolved and deduplicated before probing. Up to 16 HEAD requests
+run concurrently through the shared bounded pool; each job records its own
+failure instead of stopping other jobs. Count overflow is known before the pool
+starts. Only the first 40 distinct URLs are probed, preserving private-report
+diagnostics for those candidates while the whole public snapshot is rejected.
+The deadline remains a fail-closed backstop; queued jobs do not fetch after it
+expires. Slow healthy origins no longer consume the deadline one asset at a time.
 Verification is retained
 with the five-minute snapshot; later external outages are caught by the audit
 or the next rebuild, not treated as a permanent availability guarantee. Large
@@ -108,6 +121,10 @@ Non-public rows receive `not_public`; their assets are never probed. Scientific
 readiness reasons are preserved. Unresolved primary assets also carry concrete
 verification reasons such as `asset_origin_untrusted`, `asset_http_403`,
 `asset_probe_failed` or `asset_probe_budget_exceeded`.
+Prose-only license evidence without a resolved public text asset reports
+`license_text_asset_pending`, not `license_asset_unresolved`. Publish the terms
+at a trusted public HTTPS URL and set `license_url`; a URL that cannot be verified
+still reports `license_asset_unresolved`. Prose is never sent to the HEAD prober.
 `publication_issues` contains `asset_probe_budget_exceeded` when the public
 snapshot cannot be completed, even if all primary assets passed and only an
 optional asset or logo exceeded the budget. In that case the row-level totals
@@ -117,6 +134,8 @@ This endpoint is always `private, no-store`, never reads or writes the public
 KV snapshot, and does not return private titles, source URLs, draft prose or
 review identities. It evaluates current state rather than claiming that every
 excluded row can be automatically repaired.
+Catalog-level failures log their diagnostic message server-side; public errors
+remain the generic `stac_unavailable` envelope and do not expose those details.
 
 ## Regression Coverage
 
@@ -129,6 +148,11 @@ non-dependencies, dataset/decorations/renditions/delivery changes, deployment
 R2 changes, visibility withdrawal with warm KV, and KV/D1 failure behavior.
 Distinct primary URLs exercise the 40/41/60-probe boundaries; optional-asset
 overflow and a deadline expiring on the final probe also reject publication.
+Fake-clock checks cover six healthy 2.8-second assets and forty 400-millisecond
+assets, enforcing the 16-request concurrency cap and URL deduplication. Individual
+failures do not abort queued probes. Additional tests cover operator/public hash
+separation, discovery caching on 200/304, private failure diagnostics and prose
+versus URL license evidence.
 The pinned official core and extension validator also validates actual HTTP
 output, not only hand-built projection fixtures. Richer mapping invalidation
 tests remain deferred together with those disabled mappings.
@@ -136,9 +160,12 @@ tests remain deferred together with those disabled mappings.
 ## Reachability Audit
 
 Run `npm run audit:stac` with `STAC_AUDIT_ROOT` set to the enabled HTTPS root.
-Set `STAC_AUDIT_ORIGINS` to comma-separated trusted asset and contextual-link
-origins. The root origin and the project/adopted-extension schema origins are
-included automatically. No credentials are read or forwarded. These variables
+Set `STAC_AUDIT_ORIGINS` to comma-separated trusted asset, contextual-link and
+schema origins. Only the root origin and `https://stac-extensions.github.io`
+are included automatically. A fork using the upstream Terraviz schema must
+explicitly include `https://terraviz.zyra-project.org`; the upstream site is not
+implicitly trusted for assets, contextual links or schemas. No credentials are
+read or forwarded. These variables
 are operator configuration, never copied from an untrusted dataset.
 
 The audit traverses same-root resource and pagination links, checks declared

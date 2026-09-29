@@ -42,7 +42,7 @@ export async function auditStac(options: AuditOptions): Promise<AuditReport> {
   if (root.protocol !== 'https:' || root.username || root.password || root.search || root.hash) throw new Error('Root must be a credential-free HTTPS URL')
   root.pathname = root.pathname.replace(/\/$/, '')
   const fetchImpl = options.fetchImpl ?? fetch
-  const origins = new Set([root.origin, 'https://terraviz.zyra-project.org', 'https://stac-extensions.github.io', ...(options.allowedOrigins ?? [])])
+  const origins = new Set([root.origin, 'https://stac-extensions.github.io', ...(options.allowedOrigins ?? [])])
   const report: AuditReport = { schema_version: 1, ok: true, documents: 0, assets: 0, schemas: 0, issues: [] }
   const issue = (url: string, code: string) => { report.ok = false; report.issues.push({ url, code }) }
   const safe = (href: unknown): href is string => {

@@ -112,7 +112,6 @@ export const onRequestGet: PagesFunction<CatalogEnv> = async context => {
   const discovery = new Headers({ ETag: etag, 'Cache-Control': CACHE_CONTROL })
   if (context.env.STAC_ENABLED === 'true' && isPublicStacUrl(identity.base_url)) {
     discovery.set('Link', `<${identity.base_url.replace(/\/$/, '')}/api/v1/stac>; rel="related"; type="application/json"; title="STAC Catalog"`)
-    discovery.set('Cache-Control', 'public, no-cache, must-revalidate')
   }
   if (context.request.headers.get('if-none-match') === etag) {
     return new Response(null, {

@@ -2,6 +2,7 @@
 // Copyright 2026 The Zyra Project
 
 import type { CatalogEnv } from './env'
+import { runBoundedPool } from './bounded-pool'
 import { isPublicStacUrl, type StacResolvedAsset } from './stac-builders'
 import { evaluateMetadataReadiness } from './metadata-readiness'
 import { resolveHttpAssetUrl } from './r2-public-url'
@@ -30,17 +31,21 @@ export async function verifyStacAssets(env: CatalogEnv, model: StacPublicationIn
   const issues = new Map<string, string>()
   const urlIssues = new Map<string, string>()
   const byUrl = new Map<string, VerifiedUrl | null>()
-  const deadline = AbortSignal.timeout(15000)
-  let budgetExhausted = false
+  const resolvedRefs = new Map<string, string>()
   for (const ref of references) {
     const href = resolveHttpAssetUrl(env, ref.startsWith('url:') ? ref.slice(4) : ref)
     if (!href || !allowed(href)) { issues.set(ref, href ? 'asset_origin_untrusted' : 'asset_reference_unsupported'); continue }
-    if (!byUrl.has(href)) {
-      if (byUrl.size >= 40 || deadline.aborted) {
-        budgetExhausted = true
-        issues.set(ref, 'asset_probe_budget_exceeded')
-        continue
-      }
+    resolvedRefs.set(ref, href)
+  }
+  const distinctUrls = [...new Set(resolvedRefs.values())]
+  let budgetExhausted = distinctUrls.length > 40
+  for (const href of distinctUrls.slice(40)) urlIssues.set(href, 'asset_probe_budget_exceeded')
+  const deadline = AbortSignal.timeout(15000)
+  await runBoundedPool(distinctUrls.slice(0, 40).map(href => async () => {
+    if (deadline.aborted) {
+      budgetExhausted = true
+      urlIssues.set(href, 'asset_probe_budget_exceeded')
+    } else {
       let result: VerifiedUrl | null = null
       try {
         const response = await fetch(href, { method: 'HEAD', redirect: 'manual', credentials: 'omit',
@@ -57,6 +62,8 @@ export async function verifyStacAssets(env: CatalogEnv, model: StacPublicationIn
       }
       byUrl.set(href, result)
     }
+  }), 16)
+  for (const [ref, href] of resolvedRefs) {
     const result = byUrl.get(href)
     if (result) verified.set(ref, { ...result, sourceRef: ref, anonymous: true,
       ...(ref.startsWith('r2:') && model.node ? { hostedBy: model.node.identity.node_id } : {}) })

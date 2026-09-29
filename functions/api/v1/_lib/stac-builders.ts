@@ -198,6 +198,7 @@ export function buildStacProduct(model: StacDatasetReadModel, node: StacNodeCont
       : [['License', row.license_url || row.license_statement]]
     for (const [title, reference] of references) {
       const licenseAsset = reference ? verifiedAsset(reference, 'license', resolvers) : null
+      if (!licenseAsset && reference && !isPublicStacUrl(reference)) return { ok: false, reasons: ['license_text_asset_pending'] }
       if (!licenseAsset || !['text/plain', 'text/html', 'application/pdf'].includes(licenseAsset.type)) return { ok: false, reasons: ['license_asset_unresolved'] }
       licenseLinks.push({ ...link('license', licenseAsset.href, licenseAsset.type), title: title! })
     }
