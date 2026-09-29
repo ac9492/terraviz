@@ -19,7 +19,7 @@ export async function verifyStacAssets(env: CatalogEnv, model: StacPublicationIn
   const references = new Set<string>()
   for (const dataset of model.datasets) {
     if (dataset.row.visibility !== 'public' || dataset.row.is_hidden !== 0 || !dataset.row.published_at || dataset.row.retracted_at !== null) continue
-    const readiness = evaluateMetadataReadiness({ ...dataset.row, publication_kind: dataset.publicationKind })
+    const readiness = evaluateMetadataReadiness({ ...dataset.row, publication_kind: dataset.publicationKind, item_identity: dataset.itemIdentity })
     if (dataset.row.transcoding === 1 || ['excluded', 'needs_review'].includes(readiness.decision)) continue
     for (const ref of [dataset.row.data_ref, ...dataset.renditions.map(entry => entry.ref), dataset.row.thumbnail_ref,
       dataset.row.sphere_thumbnail_ref, dataset.row.legend_ref, dataset.row.caption_ref, dataset.row.color_table_ref, dataset.row.license_url]) {

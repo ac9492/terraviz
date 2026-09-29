@@ -1136,6 +1136,9 @@ profile publication remains optional and must not delay this initial surface.
 
 ### Phase 3: atomic history
 
+**Implementation:** [Phase 3 implementation](PHASE3_IMPLEMENTATION.md) tracks
+the four step commits, immutable storage contract and rollout limits.
+
 1. Model frame-sequence frames as Items where each frame is independently
    addressable and timestamped.
 2. Preserve immutable workflow publication/revision identities.

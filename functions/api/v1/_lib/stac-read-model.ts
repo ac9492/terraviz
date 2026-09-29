@@ -70,6 +70,7 @@ export interface StacDatasetReadModel {
   vocabularyReferences?: VocabularyReference[]
   licenseReferenceEvidence?: Record<string, string>
   publicationKind?: 'indivisible' | 'sequence' | 'workflow' | 'unknown'
+  itemIdentity?: { kind: 'frame' | 'revision'; persisted_id: string }
 }
 export interface StacReadModel {
   node: StacNodeContext | null

@@ -26,7 +26,7 @@ export async function serveStac(request: Request, env: CatalogEnv): Promise<Resp
   const canonical = root + (path.length ? '/' + path.join('/') : '')
   let document: unknown
   let geojson = false
-  const collections = publication.products.flatMap(product => product.collection ? [product.collection] : [])
+  const collections = [...new Map(publication.products.flatMap(product => product.collection ? [[product.collection.id, product.collection] as const] : [])).values()]
   const items = publication.products.flatMap(product => product.item ? [product.item] : [])
   if (!path.length) document = publication.catalog
   else if (listing) {

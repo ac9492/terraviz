@@ -8,6 +8,7 @@ import { readStacPublicationInput } from './stac-publication-store'
 import { verifyStacAssets } from './stac-assets'
 import { computeEtag } from './snapshot'
 import type { StacCatalog } from './stac-types'
+import { historyModels, mergeHistoryCollections } from './stac-history'
 
 export interface StacPublication {
   catalog: StacCatalog
@@ -48,7 +49,7 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
   if (!model.node) throw new Error('Missing node identity')
   const branding = model.branding
   if (branding) model.node.publicOrgName = branding.org_name
-  const seed = JSON.stringify({ version: 4, operatorReport: options.operatorReport === true, model, r2: env.R2_PUBLIC_BASE ?? null, origins: env.STAC_ASSET_ORIGINS ?? null })
+  const seed = JSON.stringify({ version: 5, operatorReport: options.operatorReport === true, model, r2: env.R2_PUBLIC_BASE ?? null, origins: env.STAC_ASSET_ORIGINS ?? null })
   const key = `stac:publication:v1:${(await computeEtag(seed)).replace(/"/g, '')}`
   if (env.CATALOG_KV && !options.operatorReport) {
     try {
@@ -58,7 +59,11 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
   }
   const products: StacProduct[] = []
   const report: StacPublication['report'] = []
-  const { assets, issues, budgetExhausted } = await verifyStacAssets(env, model)
+  const datasets = model.datasets.flatMap(dataset => {
+    const publications = model.history.filter(publication => publication.dataset_id === dataset.row.id)
+    return publications.length ? publications.flatMap(publication => historyModels(publication, dataset.row)) : [dataset]
+  })
+  const { assets, issues, budgetExhausted } = await verifyStacAssets(env, { ...model, datasets })
   if (budgetExhausted && !options.operatorReport) throw new Error('STAC asset probe budget exceeded')
   const logo = branding?.logo_ref ? assets.get(branding.logo_ref) : undefined
   if (logo?.type.startsWith('image/')) {
@@ -66,13 +71,18 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
     assets.set(logo.href, { ...logo, sourceRef: logo.href })
   }
   const resolvers = stacResolvers(model.node, assets)
-  for (const dataset of model.datasets) {
+  for (const dataset of datasets) {
     const result = buildStacProduct(dataset, model.node, stacResolvers(model.node, assets, dataset))
     const detail = result.reasons.includes('data_asset_unresolved') ? issues.get(dataset.row.data_ref) : undefined
-    report.push({ id: dataset.row.id, included: result.ok, reasons: [...result.reasons, ...(detail ? [detail] : [])] })
+    const existing = report.find(entry => entry.id === dataset.row.id)
+    const reasons = [...result.reasons, ...(detail ? [detail] : [])]
+    if (existing) { existing.included ||= result.ok; existing.reasons = [...new Set([...existing.reasons, ...reasons])] }
+    else report.push({ id: dataset.row.id, included: result.ok, reasons })
     if (result.ok) products.push(result.value)
   }
-  const catalog = buildStacCatalog(model.node, resolvers, products)
+  mergeHistoryCollections(products)
+  const roots = [...new Map(products.map(product => [product.collection?.id ?? product.item!.id, product])).values()]
+  const catalog = buildStacCatalog(model.node, resolvers, roots)
   if (!catalog.ok) throw new Error(`Invalid STAC catalog: ${catalog.reasons.join(',')}`)
   const publication = { catalog: catalog.value, products, report,
     publicationIssues: budgetExhausted ? ['asset_probe_budget_exceeded'] : [] }

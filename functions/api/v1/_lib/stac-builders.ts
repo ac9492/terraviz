@@ -168,7 +168,7 @@ export function buildStacProduct(model: StacDatasetReadModel, node: StacNodeCont
   const { row } = model
   if (row.visibility !== 'public' || row.is_hidden !== 0 || row.retracted_at !== null || !row.published_at) return { ok: false, reasons: ['not_public'] }
   if (row.transcoding === 1) return { ok: false, reasons: ['transcoding_in_progress'] }
-  const readiness = evaluateMetadataReadiness({ ...row, publication_kind: model.publicationKind, curated_license_evidence: model.licenseReferenceEvidence
+  const readiness = evaluateMetadataReadiness({ ...row, publication_kind: model.publicationKind, item_identity: model.itemIdentity, curated_license_evidence: model.licenseReferenceEvidence
     ? Object.fromEntries(Object.entries(model.licenseReferenceEvidence).map(([key, statement]) => [key, { statement }])) : undefined })
   if (readiness.decision === 'excluded' || readiness.decision === 'needs_review') return { ok: false, reasons: readiness.reasons }
   if (!row.title.trim()) return { ok: false, reasons: ['title_missing'] }
