@@ -469,21 +469,23 @@ export function createVrInteraction(
    * dragging. Three phases:
    *
    *   - `idle` — no drag.
-   *   - `pending` — a selectstart landed on the list region; we wait
+   *   - `pending` — a touch selectstart landed on the list viewport
+   *     of a list that can scroll (`browse.canDragScrollAt`); we wait
    *     to see if it becomes a drag (movement past the threshold) or
    *     a clean tap. Pending lets a tap still select a dataset.
    *   - `scroll` — movement exceeded the threshold; the gesture is a
    *     drag-scroll. Any armed card select is cancelled so dragging
    *     on a card scrolls instead of selecting.
    *
-   * Controller sessions are unaffected: a controller tap is a
-   * press+release with no movement, so it stays `pending` and fires
-   * the select normally; controller scrolling still goes through the
-   * thumbstick path.
+   * Only inputs without a thumbstick open a pending drag (see
+   * `isTouchInput`). A Quest trigger pull routinely rotates the
+   * controller by ~1°, which at arm's length crosses the threshold,
+   * so letting controllers in would turn ordinary clicks into
+   * zero-length scrolls. Controllers keep thumbstick scroll + click.
    */
   type BrowseDragState =
     | { kind: 'idle' }
-    | { kind: 'pending'; controllerIndex: 0 | 1; startUvY: number }
+    | { kind: 'pending'; controllerIndex: 0 | 1; startUv: THREE.Vector2 }
     | { kind: 'scroll'; controllerIndex: 0 | 1 }
   let browseDrag: BrowseDragState = { kind: 'idle' }
   /**
@@ -572,8 +574,8 @@ export function createVrInteraction(
 
   function pickHit(controller: THREE.XRTargetRaySpace):
     | { kind: 'hud'; action: VrHudAction }
-    | { kind: 'browse'; action: VrBrowseAction }
-    | { kind: 'browse-scroll' }
+    | { kind: 'browse'; action: VrBrowseAction; uv: THREE.Vector2 }
+    | { kind: 'browse-scroll'; uv: THREE.Vector2 }
     | { kind: 'tour-control'; action: VrTourControlsAction }
     | { kind: 'tour-overlay'; action: VrTourInteractiveAction }
     | { kind: 'overlay-drag'; overlayId: string; mesh: THREE.Mesh }
@@ -592,15 +594,15 @@ export function createVrInteraction(
     // with the panel even when it overlaps the globe from their angle.
     if (ctx.browse.isVisible()) {
       const browseHits = raycaster.intersectObject(ctx.browse.mesh, false)
-      if (browseHits.length > 0 && browseHits[0].uv) {
-        const action = ctx.browse.hitTest({
-          x: browseHits[0].uv.x,
-          y: browseHits[0].uv.y,
-        })
-        if (action) return { kind: 'browse', action }
+      const uv = browseHits[0]?.uv
+      if (uv) {
+        // UV goes back to the caller, like the globe hit below, so a
+        // touch press can open a drag-scroll without re-raycasting.
+        const action = ctx.browse.hitTest(uv)
+        if (action) return { kind: 'browse', action, uv }
         // Ray hit the panel but not a button/card — still counts as
         // a browse hit for scroll purposes.
-        return { kind: 'browse-scroll' }
+        return { kind: 'browse-scroll', uv }
       }
     }
 
@@ -883,16 +885,24 @@ export function createVrInteraction(
   }
 
   /**
-   * Read the browse panel's UV.y at the current raycaster position.
-   * The raycaster is already aimed at the controller from the
-   * preceding pickHit, so this is one extra intersectObject against
-   * the panel only — called on the infrequent selectstart, not per
-   * frame. Returns null when the ray misses the panel (no UV).
+   * Whether this controller slot is an input with no thumbstick: a
+   * phone's screen touch (`'screen'`) or a transient pointer such as
+   * gaze-and-pinch (`'transient-pointer'`). Only these open a browse
+   * drag-scroll; tracked controllers scroll with the thumbstick.
    */
-  function currentBrowseUvY(): number | null {
-    const hits = raycaster.intersectObject(ctx.browse.mesh, false)
-    const uv = hits[0]?.uv
-    return uv ? uv.y : null
+  function isTouchInput(index: 0 | 1): boolean {
+    const mode = inputSources[index]?.targetRayMode
+    return mode === 'screen' || mode === 'transient-pointer'
+  }
+
+  /**
+   * UV under this controller's ray on the browse panel alone, or null
+   * on a miss. Used while a drag-scroll is live, so the gesture keeps
+   * tracking the panel even if the HUD slides in front of it.
+   */
+  function browsePanelUv(index: 0 | 1): THREE.Vector2 | null {
+    setRaycasterFromController(controllers[index])
+    return raycaster.intersectObject(ctx.browse.mesh, false)[0]?.uv ?? null
   }
 
   function onSelectStart(index: 0 | 1): void {
@@ -915,31 +925,17 @@ export function createVrInteraction(
       return
     }
 
-    if (hit.kind === 'browse') {
-      browseArmed[index] = hit.action
-      // A press on a dataset CARD may turn into a drag-scroll on
-      // phones (no thumbstick). Arm the select for the tap case,
-      // but also open a pending drag — if the pointer moves past
-      // the threshold before release, the gesture becomes a scroll
-      // and the armed select is cancelled. Category/close actions
-      // are discrete taps, so they don't participate.
-      if (hit.action.kind === 'select') {
-        const uvY = currentBrowseUvY()
-        if (uvY !== null) {
-          browseDrag = { kind: 'pending', controllerIndex: index, startUvY: uvY }
-        }
-      }
-      return
-    }
-
-    if (hit.kind === 'browse-scroll') {
-      // Ray hit the panel body (not a button/card). On phones this
-      // is the start of a drag-scroll; controllers never scroll this
-      // way (they use the thumbstick), and a press here has no armed
-      // action to fire on release, so pending is harmless for them.
-      const uvY = currentBrowseUvY()
-      if (uvY !== null) {
-        browseDrag = { kind: 'pending', controllerIndex: index, startUvY: uvY }
+    if (hit.kind === 'browse' || hit.kind === 'browse-scroll') {
+      // Card / chip / close presses arm here and fire on release. A
+      // hit on the panel body (browse-scroll) has nothing to arm.
+      if (hit.kind === 'browse') browseArmed[index] = hit.action
+      // A touch press on a list that can scroll may turn into a
+      // drag-scroll (phones have no thumbstick). Open a pending drag:
+      // if the pointer moves past the threshold before release, the
+      // gesture becomes a scroll and the armed card select is
+      // cancelled. Controllers never open one — see BrowseDragState.
+      if (isTouchInput(index) && ctx.browse.canDragScrollAt(hit.uv)) {
+        browseDrag = { kind: 'pending', controllerIndex: index, startUv: hit.uv }
       }
       return
     }
@@ -1012,6 +1008,24 @@ export function createVrInteraction(
       }
       hudArmed[index] = null
     }
+    // Browse drag-scroll end. update() promotes a pending press at
+    // most once per frame, so a quick flick can start and end between
+    // two frames. Check the release point before the click handling
+    // below: past the threshold, apply the whole movement as a scroll
+    // and drop the armed select. A pending press still under the
+    // threshold was a tap and falls through to the click; a 'scroll'
+    // drag already cancelled its select on promotion.
+    if (browseDrag.kind !== 'idle' && browseDrag.controllerIndex === index) {
+      if (browseDrag.kind === 'pending') {
+        const uv = browsePanelUv(index)
+        if (uv && Math.abs(uv.y - browseDrag.startUv.y) >= BROWSE_DRAG_THRESHOLD) {
+          browseArmed[index] = null
+          ctx.browse.beginDrag(browseDrag.startUv)
+          ctx.browse.dragTo(uv)
+        }
+      }
+      browseDrag = { kind: 'idle' }
+    }
     // Browse panel: same click semantics — fire only if still pointing
     // at the same action on release.
     if (browseArmed[index]) {
@@ -1051,13 +1065,6 @@ export function createVrInteraction(
     // update's offset IS the committed state.
     if (overlayDrag.kind === 'overlay' && overlayDrag.controllerIndex === index) {
       overlayDrag = { kind: 'idle' }
-    }
-    // Browse drag-scroll end. A 'pending' drag (no movement) was a
-    // tap — fall through to the armed-select handling above so the
-    // card still loads. A 'scroll' drag already cancelled the armed
-    // select on promotion, so there's nothing to fire; just clear.
-    if (browseDrag.kind !== 'idle' && browseDrag.controllerIndex === index) {
-      browseDrag = { kind: 'idle' }
     }
     // Place button: same press-and-release-on-same-target click semantics.
     if (placeArmed[index]) {
@@ -1559,28 +1566,26 @@ export function createVrInteraction(
 
       // Browse panel touch drag-scroll. Pending → scroll transitions
       // when the pointer moves past the threshold; once scrolling,
-      // feed the live UV to the panel each frame. Controller taps
-      // (no movement) stay pending and resolve as a select on
-      // release. Phones have no thumbstick, so this is their only
-      // way to scroll the list.
+      // feed the live UV to the panel each frame. A touch tap (no
+      // movement) stays pending and resolves as a select on release.
+      // Phones have no thumbstick, so this is their only way to
+      // scroll the list.
       if (browseDrag.kind !== 'idle') {
-        const controller = controllers[browseDrag.controllerIndex]
-        setRaycasterFromController(controller)
-        const hits = raycaster.intersectObject(ctx.browse.mesh, false)
-        const uv = hits[0]?.uv
+        const uv = browsePanelUv(browseDrag.controllerIndex)
         if (uv) {
           if (browseDrag.kind === 'pending') {
-            if (Math.abs(uv.y - browseDrag.startUvY) >= BROWSE_DRAG_THRESHOLD) {
-              // Promote to a scroll and cancel any armed card select
+            if (Math.abs(uv.y - browseDrag.startUv.y) >= BROWSE_DRAG_THRESHOLD) {
+              // Promote to a scroll and cancel the armed card select
               // so dragging on a card scrolls rather than selecting.
+              // The baseline is the pointer now, not the press point,
+              // so the list doesn't jump by the threshold distance.
               const idx = browseDrag.controllerIndex
-              if (browseArmed[idx]?.kind === 'select') browseArmed[idx] = null
-              ctx.browse.beginDrag()
-              ctx.browse.dragTo({ x: uv.x, y: uv.y })
+              browseArmed[idx] = null
+              ctx.browse.beginDrag(uv)
               browseDrag = { kind: 'scroll', controllerIndex: idx }
             }
           } else {
-            ctx.browse.dragTo({ x: uv.x, y: uv.y })
+            ctx.browse.dragTo(uv)
           }
         }
       }
