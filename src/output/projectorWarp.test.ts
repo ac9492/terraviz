@@ -503,10 +503,33 @@ describe("parity with sphere-sim's own tracer", () => {
     provenance: { sphereSimCommit: string }
     sosQuadrantViewports: ({ id: string } & WarpViewport)[]
     rigs: Rig[]
+    rotated: Rig & { rotationOffsetDeg: number }
   }
 
   it('was generated from a named sphere-sim commit', () => {
     expect(parity.provenance.sphereSimCommit).toMatch(/^[0-9a-f]{40}$/)
+  })
+
+  it("carries a sphere rig's own rotation in the mesh, so nothing may apply it again (convention 3)", () => {
+    // SOS's nominal rig turned 30°, which sphere-sim bakes into `u`.
+    // Boulder's rotation is 0, so no other fixture can tell a mesh that
+    // carries the rotation from one that does not. With nothing applied
+    // the mesh lands where the tracer says; with the rig's rotation
+    // applied again — seeding the output's content rotation from the rig
+    // — it lands the rotation away. Measured: 0.21° at most against
+    // 26–30°, at 21×21 on interior cells.
+    const rig = parity.rotated
+    expect(rig.rotationOffsetDeg).toBe(30)
+    const geometry = buildWarpGeometry([{ mesh: parsed(fixture(rig.file)), viewport: FULL }])
+    const degrees = (a: Vec3, b: Vec3): number => (angleRad(a, b) * 180) / Math.PI
+    expect(rig.samples.length).toBeGreaterThan(10)
+    for (const [px, py, u, v] of rig.samples) {
+      const s = sampleWarpGeometry(geometry, (px / rig.resX) * 2 - 1, 1 - (py / rig.resY) * 2)
+      if (s === null) throw new Error(`no triangle covers (${px}, ${py})`)
+      const truth = nodeDirection(u, v)
+      expect(degrees(nodeDirection(s.u, s.v), truth)).toBeLessThan(1)
+      expect(degrees(nodeDirection(s.u - rig.rotationOffsetDeg / 360, s.v), truth)).toBeGreaterThan(20)
+    }
   })
 
   it("holds SOS's quadrant table to sphere-sim's", () => {

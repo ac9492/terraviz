@@ -27,6 +27,17 @@
  *     on a node is the easy case — the node's direction is the axis
  *     whatever its `u` says.
  *
+ * Two more outputs, each for one question the rigs above cannot answer:
+ *
+ *   - **SOS's nominal rig turned 30°** — convention 3. sphere-sim bakes a
+ *     sphere rig's mechanical rotation into `u`, and Boulder's is 0, so
+ *     only a turned rig can show that the mesh alone lands where the
+ *     tracer says and the rig's rotation applied again lands 30° out. At
+ *     21×21, interior cells only: what it witnesses is tens of degrees.
+ *   - **A whole bundle** from sphere-sim's own `bundleEntries` and
+ *     `buildZip`, at 5×5, with a restore point holding an older P1 — the
+ *     ZIP reader's fixture, and the one entry it must never take.
+ *
  * Samples are taken inside every triangle that crosses the seam or holds
  * the pole, every triangle in the two rings nearest the silhouette (where
  * the 41×41 grid is least accurate, and the test's tolerances step), and
@@ -272,6 +283,41 @@ async function main(): Promise<void> {
     console.log(`  pole triangles: directions ${summary(poleErrors)} | unwrapped (u, v) ${summary(naivePole)}`)
   }
 
+  // Convention 3: a sphere rig's mechanical rotation is baked into `u`
+  // (`worldLonToTextureLon`), so the mesh alone must land where the
+  // tracer says, and an output that also applied the rig's rotation as
+  // its content rotation would land that far out. Boulder's rotation is
+  // 0 and cannot tell the two apart; SOS's nominal rig turned 30° can.
+  // 21×21 and interior cells only, because what this witnesses is tens
+  // of degrees, not pixels — the coarse grid keeps the fixture small.
+  const { nominalRig } = await load<{ nominalRig(p: { rotationOffsetDeg?: number }): unknown }>('packages/sim/src/scene.ts')
+  const ROTATION_DEG = 30
+  const turned = prepareRig(nominalRig({ rotationOffsetDeg: ROTATION_DEG }))
+  const turnedIndex = turned.projectors.findIndex((p) => p.cal.id === 'P3')
+  const turnedExport = buildWarpExports(turned, { cols: 21, rows: 21 })[turnedIndex]
+  const turnedFile = `nominal-rot${ROTATION_DEG}-P3.data`
+  writeFileSync(join(OUT_DIR, turnedFile), formatWarpMesh(turnedExport))
+  const turnedSamples: number[][] = []
+  {
+    const { cols, rows, nodes } = turnedExport
+    const { resX, resY } = turned.projectors[turnedIndex].cal.intrinsics
+    const valid = (i: number, j: number): boolean => i >= 0 && j >= 0 && i < cols && j < rows && nodes[j * cols + i].intensity >= 0
+    let seen = 0
+    for (let j = 0; j < rows - 1; j++) {
+      for (let i = 0; i < cols - 1; i++) {
+        // Two cells in from any no-data node on every side: interior.
+        let interior = true
+        for (let dj = -2; dj <= 3 && interior; dj++) for (let di = -2; di <= 3 && interior; di++) interior = valid(i + di, j + dj)
+        if (!interior || seen++ % 3 !== 0) continue
+        const x = ((i + 0.5) / (cols - 1)) * resX
+        const y = ((j + 0.5) / (rows - 1)) * resY
+        const tex = truth(turned, turnedIndex, x, y)
+        if (tex !== null) turnedSamples.push([round(x, 3), round(y, 3), round(tex[0], 7), round(tex[1], 7)])
+      }
+    }
+  }
+  console.log(`rotated ${ROTATION_DEG}° P3: 21x21, ${turnedSamples.length} interior samples written`)
+
   const parity = {
     provenance: {
       generator: 'scripts/generate-warp-parity-fixtures.ts',
@@ -283,6 +329,15 @@ async function main(): Promise<void> {
     },
     sosQuadrantViewports: SOS_QUADRANT_VIEWPORTS.map((vp, i) => ({ id: `P${i + 1}`, ...vp })),
     rigs,
+    rotated: {
+      name: 'nominal-rot30',
+      file: turnedFile,
+      projectorId: 'P3',
+      rotationOffsetDeg: ROTATION_DEG,
+      resX: turned.projectors[turnedIndex].cal.intrinsics.resX,
+      resY: turned.projectors[turnedIndex].cal.intrinsics.resY,
+      samples: turnedSamples,
+    },
   }
   // One sample per line: pretty-printing puts every number on its own line
   // and triples the file for nothing a reviewer reads.

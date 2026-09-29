@@ -92,7 +92,7 @@
 
 import { logger } from '../utils/logger'
 import type { LinkHealth } from './linkWatchdog'
-import type { GpuContextState } from './outputScene'
+import type { GpuContextState, WarpDrawState } from './outputScene'
 import type { SyncKind } from './outputSync'
 
 /** How often the HUD re-reads and repaints. */
@@ -140,6 +140,35 @@ export interface DebugOverlayReading {
    *  away. */
   gpuState: GpuContextState
   framebuffer: { width: number; height: number }
+  /**
+   * What a `projector-warp` window's warp is drawing (rung 16), or
+   * `null` for any other mode — which omits the line. It is the field a
+   * black warp window needs most: with no usable set it draws nothing
+   * by design, and this is where it says whether that is "nothing
+   * imported" or "a set arrived and was refused", and which.
+   */
+  warp?: WarpDrawState | null
+}
+
+/** The warp line's text. Exported for the test; the refusal is the code the panel words, raw. */
+export function formatWarpLine(warp: WarpDrawState): string {
+  switch (warp.state) {
+    case 'none':
+      return 'warp  none — import a set in the Outputs panel'
+    case 'refused':
+      return `warp  refused — ${warp.refusal.code}`
+    case 'drawn': {
+      const meshes = `${warp.meshes} mesh${warp.meshes === 1 ? '' : 'es'}`
+      // Dropped-as-too-wide is never nonzero on a sphere, so a number
+      // here is a mesh surface's UV islands — shown only then.
+      const dropped = warp.droppedWide > 0 ? ` · ${warp.droppedWide} dropped` : ''
+      return `warp  ${warp.id.slice(0, 8)} · ${meshes}${dropped}`
+    }
+    default: {
+      const unreachable: never = warp
+      return unreachable
+    }
+  }
 }
 
 /**
@@ -162,6 +191,10 @@ export function formatOverlay(reading: DebugOverlayReading): string[] {
         `sync  ${driftS >= 0 ? '+' : '−'}${Math.abs(Math.round(driftS * 1000))} ms`
   return [
     `data  ${datasetId ?? '—'}`,
+    // Under `data`, because the two answer one question between them —
+    // what is on the glass — and a warp with no usable set means the
+    // answer is nothing, whatever `data` says is loaded.
+    ...(reading.warp ? [formatWarpLine(reading.warp)] : []),
     sync,
     // Directly under `sync`, because the two are read together: a
     // drift the correction cannot fix means something different when

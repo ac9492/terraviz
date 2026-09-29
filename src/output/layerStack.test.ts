@@ -960,3 +960,47 @@ describe('the fetch has no seam at the dateline', () => {
     expect(OVERLAY_SAMPLE_GLSL).toContain('gradScale.y = -gradScale.y;')
   })
 })
+
+describe('the projector-warp variant (rung 16)', () => {
+  const plain = [0, 1, 2].map((n) => buildOutputFragmentShader(n))
+  const warped = [0, 1, 2].map((n) => buildOutputFragmentShader(n, { warp: true }))
+
+  it('leaves the ordinary shader exactly as it was', () => {
+    expect([0, 1, 2].map((n) => buildOutputFragmentShader(n, { warp: false }))).toEqual(plain)
+    for (const shader of plain) expect(shader).not.toContain('warpFrameUv')
+  })
+
+  it('turns the direction back into the frame coordinate before anything else runs', () => {
+    for (const shader of warped) {
+      expect(shader).not.toContain('varying vec2 vUv;')
+      expect(shader).toContain('varying vec3 vWarpDirection;')
+      const main = shader.indexOf('void main() {')
+      // The helper is defined before `main` — GLSL ES 1.00 has no forward
+      // declarations — and after PI, which it uses.
+      expect(shader.indexOf('vec2 warpFrameUv(vec3 direction)')).toBeLessThan(main)
+      expect(shader.indexOf('const float TWO_PI')).toBeLessThan(shader.indexOf('vec2 warpFrameUv'))
+      const firstStatement = shader.slice(main).split('\n')[1].trim()
+      expect(firstStatement).toBe('vec2 vUv = warpFrameUv(vWarpDirection);')
+    }
+  })
+
+  it('takes the seam-free gradients after the prologue and before any branch, as the plain pass does', () => {
+    for (const [i, shader] of warped.entries()) {
+      const main = shader.slice(shader.indexOf('void main() {'))
+      const gradients = main.indexOf('equirectGradients(sphereUv, sphereGradX, sphereGradY);')
+      expect(main.indexOf('warpFrameUv(vWarpDirection)')).toBeLessThan(gradients)
+      // Everything from the ray-march down is the plain pass unchanged.
+      const plainMain = plain[i].slice(plain[i].indexOf('void main() {'))
+      const from = (text: string) => text.slice(text.indexOf('  // Split folds U'), text.indexOf('  gl_FragColor'))
+      expect(from(main)).toBe(from(plainMain))
+    }
+  })
+
+  it('applies the blend weight on the way out, and only there', () => {
+    for (const shader of warped) {
+      expect(shader).toContain('gl_FragColor = vec4(colour * warpBlend(vWarpWeight, uBlendGamma), 1.0);')
+      expect(shader.match(/gl_FragColor/g)).toHaveLength(1)
+    }
+  })
+})
+

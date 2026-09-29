@@ -546,6 +546,61 @@ export function blendFactor(weight: number, gamma: number): number {
   return Math.pow(Math.min(weight, 1), 1 / g)
 }
 
+/** The buffers `buildWarpGeometry`'s arrays are bound under, beside Three's own `position`. */
+export const WARP_ATTRIBUTES = {
+  direction: 'warpDirection',
+  weight: 'warpWeight',
+} as const
+
+/** The one uniform a warp adds. */
+export const WARP_UNIFORMS = {
+  blendGamma: 'uBlendGamma',
+} as const
+
+/**
+ * The warp's vertex stage: each node's clip-space position as built, and
+ * its direction and weight handed on to be interpolated — a direction,
+ * never a texel, for the reason the module header gives. `position` is
+ * declared by Three's own prefix; the two buffers are this module's.
+ */
+export const WARP_VERTEX_SHADER = `
+attribute vec3 ${WARP_ATTRIBUTES.direction};
+attribute float ${WARP_ATTRIBUTES.weight};
+varying vec3 vWarpDirection;
+varying float vWarpWeight;
+
+void main() {
+  vWarpDirection = ${WARP_ATTRIBUTES.direction};
+  vWarpWeight = ${WARP_ATTRIBUTES.weight};
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`.trim()
+
+/**
+ * What a warp adds to the fragment stage, as GLSL, each a transcription
+ * of the TypeScript above: `warpFrameUv` is `directionToWarpUv` — the
+ * interpolated direction normalized and turned back into the frame
+ * coordinate the equirect pass starts from — and `warpBlend` is
+ * `blendFactor`, the linear-light weight applied to an encoded colour.
+ * `blendFactor`'s fallback for a gamma that is not one is done where the
+ * uniform is written, so the GLSL never sees one.
+ *
+ * Uses the pass's own `PI` and `TWO_PI`, so it has to follow their
+ * declaration — `layerStack` places it in the preamble before `main`.
+ */
+export const WARP_FRAGMENT_GLSL = `
+vec2 warpFrameUv(vec3 direction) {
+  vec3 d = normalize(direction);
+  float lat = asin(clamp(d.y, -1.0, 1.0));
+  float lon = atan(d.z, d.x);
+  return vec2(lon / TWO_PI + 0.5, lat / PI + 0.5);
+}
+
+float warpBlend(float weight, float gamma) {
+  return pow(clamp(weight, 0.0, 1.0), 1.0 / gamma);
+}
+`.trim()
+
 /** The ids SOS's quadrant layout places, in sphere-sim's `nominalRig` order. */
 export type SosQuadrantId = 'P1' | 'P2' | 'P3' | 'P4'
 
