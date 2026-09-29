@@ -47,7 +47,7 @@
 
 import { placeWarpSet, type PlacedWarpMesh, type WarpSetRefusal } from '../../output/projectorWarp'
 import { logger } from '../../utils/logger'
-import { isWarpSetId } from './protocol'
+import { isWarpSetId, type WarpTexture } from './protocol'
 import { warpSetId, type WarpLayoutSource, type WarpSet, type WarpSetMesh } from './warpImport'
 
 /** Every stored set's key is this plus its content id. */
@@ -113,7 +113,7 @@ export interface WarpSetStore {
   list(): string[]
 }
 
-const LAYOUT_SOURCES: readonly WarpLayoutSource[] = ['sos-quadrants']
+const LAYOUT_SOURCES: readonly WarpLayoutSource[] = ['sos-quadrants', 'bundle']
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -128,6 +128,21 @@ function meshFrom(value: unknown): WarpSetMesh | null {
   return { id, sourceName, text, viewport: { x: x as number, y: y as number, w: w as number, h: h as number } }
 }
 
+/**
+ * What a stored set says its meshes address: `null` when nothing said,
+ * `undefined` when what is stored is not one of the two shapes a texture
+ * takes. Absent reads as `null`, for a set written before textures were.
+ */
+function textureFrom(value: unknown): WarpTexture | null | undefined {
+  if (value === undefined || value === null) return null
+  if (!isRecord(value)) return undefined
+  if (value.surface === 'sphere' && typeof value.rotationOffsetDeg === 'number' && Number.isFinite(value.rotationOffsetDeg)) {
+    return { surface: 'sphere', rotationOffsetDeg: value.rotationOffsetDeg }
+  }
+  if (value.surface === 'mesh' && value.rotationOffsetDeg === null) return { surface: 'mesh', rotationOffsetDeg: null }
+  return undefined
+}
+
 /** The stored text as a set, or `null` for anything this build did not write. */
 function parseStoredSet(raw: string): PersistedWarpSet | null {
   let parsed: unknown
@@ -140,10 +155,20 @@ function parseStoredSet(raw: string): PersistedWarpSet | null {
   const { importedAt, layoutFrom, meshes } = parsed
   if (typeof importedAt !== 'string') return null
   if (!LAYOUT_SOURCES.includes(layoutFrom as WarpLayoutSource)) return null
+  // Not part of the content id, so checked for shape instead: a bundle's
+  // layout always states a texture, and SOS's quadrants never do.
+  const texture = textureFrom(parsed.texture)
+  if (texture === undefined || (layoutFrom === 'bundle') !== (texture !== null)) return null
   if (!Array.isArray(meshes)) return null
   const read = meshes.map(meshFrom)
   if (read.some((m) => m === null)) return null
-  return { version: WARP_SET_VERSION, importedAt, layoutFrom: layoutFrom as WarpLayoutSource, meshes: read as WarpSetMesh[] }
+  return {
+    version: WARP_SET_VERSION,
+    importedAt,
+    layoutFrom: layoutFrom as WarpLayoutSource,
+    texture,
+    meshes: read as WarpSetMesh[],
+  }
 }
 
 /** Space, by any of the names engines give it. */

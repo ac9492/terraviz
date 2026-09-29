@@ -417,35 +417,39 @@
   display: none;
 }
 
-/* SOS's four quadrants as they sit on the display — P3 P4 over P1 P2 —
-   so a picture of the screen, like the monitor map above, and for the
-   same reason it must not mirror: `direction: ltr` keeps the grid's
-   columns where the projectors are under `dir="rtl"`. The sentence
-   beside it says the same mapping as text. */
-.output-warp-quadrants {
+/* The display a warp set divides, in its own shape (the aspect ratio is
+   set from TypeScript), with each mesh's rect placed where it goes: SOS's
+   quadrants with the meshes that would fill them, or a bundle's own
+   layout. A picture of the screen, like the monitor map above, and for
+   the same reason it must not mirror: the cells are placed with physical
+   left/bottom from TypeScript, and `direction: ltr` keeps their labels
+   where the projectors are under dir="rtl". The text beside it says the
+   same mapping in words. */
+.output-warp-layout {
+  position: relative;
   direction: ltr;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2px;
-  inline-size: min(100%, 9rem);
-  aspect-ratio: 16 / 9;
+  inline-size: min(100%, 12rem);
   margin-inline: auto;
+  background: var(--color-surface-raised, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.18));
+  border-radius: var(--radius-sm, 0.25rem);
 }
 
-.output-warp-quadrant {
+.output-warp-cell {
+  position: absolute;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 0.6875rem;
   color: var(--color-text-muted, rgba(242, 245, 249, 0.7));
-  background: var(--color-surface-raised, rgba(255, 255, 255, 0.08));
   border: 1px solid var(--color-border, rgba(255, 255, 255, 0.18));
-  border-radius: var(--radius-sm, 0.25rem);
 }
 
-/* A quadrant a mesh in this bundle would take. An empty one stays
-   dim — that projector gets no warp and draws nothing. */
-.output-warp-quadrant.is-filled {
+/* A rect a mesh in this import would take. An empty one stays dim —
+   that projector gets no warp and draws nothing. */
+.output-warp-cell.is-filled {
   color: var(--color-text, #f2f5f9);
+  background: var(--color-surface-raised, rgba(255, 255, 255, 0.08));
   border-color: var(--color-accent, #4aa3ff);
 }

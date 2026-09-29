@@ -36,7 +36,16 @@
  *     21×21, interior cells only: what it witnesses is tens of degrees.
  *   - **A whole bundle** from sphere-sim's own `bundleEntries` and
  *     `buildZip`, at 5×5, with a restore point holding an older P1 — the
- *     ZIP reader's fixture, and the one entry it must never take.
+ *     ZIP reader's fixture, and the one entry it must never take. It
+ *     carries `layout.json` (sphere-sim#52), built as the page builds it:
+ *     `projectorLayout` over the raw rig, `warpTexture`, and the mesh ids.
+ *     Written twice: with the layout, and without it, which is how a
+ *     refused layout and every bundle from before #52 read.
+ *   - **A placed pair**, the rig the layout exists for: sphere-sim's own
+ *     builders applied to two placed projectors, whose layout is halves
+ *     at full height where SOS's quadrants would put the same ids in the
+ *     bottom row. The page does not export a placed rig yet; sphere-sim
+ *     pins this case at the builder, and so does this fixture.
  *
  * Samples are taken inside every triangle that crosses the seam or holds
  * the pole, every triangle in the two rings nearest the silhouette (where
@@ -357,7 +366,11 @@ async function main(): Promise<void> {
     buildSosAlignments(truth: SphereSimRig, compositor: SphereSimRig): { projectorId: string; alignment: unknown }[]
     formatSosAlignment(a: unknown): string
   }>('packages/sim/src/sos.ts')
-  const { bundleEntries } = await load<{ bundleEntries(input: unknown): unknown[] }>('packages/web/src/bundle.ts')
+  const { bundleEntries, projectorLayout } = await load<{
+    bundleEntries(input: unknown): unknown[]
+    projectorLayout(rig: unknown, texture: unknown, meshes: readonly string[]): unknown
+  }>('packages/web/src/bundle.ts')
+  const { warpTexture } = await load<{ warpTexture(rig: SphereSimRig): unknown }>('packages/sim/src/warp.ts')
   const { buildZip } = await load<{ buildZip(entries: unknown[]): Uint8Array }>('packages/web/src/zip.ts')
   const { planRestore } = await load<{
     planRestore(targets: { path: string; kind: string }[], held: { path: string; bytes: Uint8Array }[]): unknown
@@ -375,8 +388,17 @@ async function main(): Promise<void> {
     ...alignment.map(([id]) => ({ path: `alignment/${id}.alignment`, kind: 'alignment' })),
   ]
   const restore = planRestore(targets, [{ path: 'warp/P1.data', bytes: new TextEncoder().encode(older) }])
+  // The layout exactly as the page builds it (sphere-sim#52): from the raw
+  // rig the meshes were traced on, the texture that rig's bake reads, and
+  // the ids of the meshes the archive carries, in their order.
+  const layout = projectorLayout(
+    world.compositorRig,
+    warpTexture(contentRig),
+    warp.map(([id]) => id),
+  )
   const entries = bundleEntries({
     warp,
+    layout,
     alignment,
     config: null,
     configName: 'local_sos_config.json',
@@ -386,6 +408,48 @@ async function main(): Promise<void> {
   })
   writeFileSync(join(OUT_DIR, 'sphere-sim-bundle.zip'), buildZip(entries))
   console.log(`bundle: ${entries.length} entries, ${warp.length} meshes at 5x5, an older P1 at 4x4 under restore/`)
+  // The same archive with no layout, as sphere-sim writes one when its
+  // layout was refused — and, to the reader, as every bundle exported
+  // before sphere-sim#52 looks. Those exist, and the import has to ask.
+  const bare = bundleEntries({
+    warp,
+    layout: null,
+    alignment,
+    config: null,
+    configName: 'local_sos_config.json',
+    alignmentCost: '',
+    rigSummary: `${warp.length} projectors, as the install describes them.`,
+    restore,
+  })
+  writeFileSync(join(OUT_DIR, 'sphere-sim-bundle-no-layout.zip'), buildZip(bare))
+
+  // A placed pair, the rig the layout exists for: sphere-sim names its
+  // projectors P1 and P2 and splits the framebuffer into halves at full
+  // height, where SOS's quadrants would put the same two ids in the bottom
+  // row. The page does not export a placed rig yet, so this bundle is its
+  // own builders applied to one — the case sphere-sim pins at the builder.
+  const placedRaw = placedRig({
+    projectors: [{ position: { x: 2.5, y: 0, z: 0 } }, { position: { x: -2.5, y: 0, z: 0 } }],
+  })
+  const placedPrepared = prepareRig(placedRaw)
+  const placedWarp = buildWarpExports(placedPrepared, { cols: 5, rows: 5 }).map(
+    (e) => [e.projectorId, formatWarpMesh(e)] as const,
+  )
+  const placedEntries = bundleEntries({
+    warp: placedWarp,
+    layout: projectorLayout(placedRaw, warpTexture(placedPrepared), placedWarp.map(([id]) => id)),
+    alignment: [],
+    config: null,
+    configName: 'local_sos_config.json',
+    alignmentCost: '',
+    rigSummary: `${placedWarp.length} placed projectors.`,
+    restore: planRestore(
+      placedWarp.map(([id]) => ({ path: `warp/${id}.data`, kind: 'warp' })),
+      [],
+    ),
+  })
+  writeFileSync(join(OUT_DIR, 'sphere-sim-placed-bundle.zip'), buildZip(placedEntries))
+  console.log(`placed bundle: ${placedEntries.length} entries, ${placedWarp.length} meshes at 5x5`)
   console.log(`wrote ${OUT_DIR} (sphere-sim ${commit.slice(0, 7)})`)
 }
 

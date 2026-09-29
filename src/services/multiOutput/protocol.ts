@@ -639,9 +639,32 @@ export interface OutputWarpMesh {
   text: string
 }
 
+/**
+ * What a warp set's `u` and `v` address, as a bundle's `layout.json`
+ * states it (sphere-sim#52): the equirectangular map with the sphere's
+ * mechanical rotation already taken off `u`, or a model's own UV set,
+ * which has no rotation. A pair rather than two fields, so the type
+ * admits a sphere with a number and a mesh with `null` and nothing in
+ * between — sphere-sim's own `WarpTexture`, restated.
+ */
+export type WarpTexture =
+  | { readonly surface: 'sphere'; readonly rotationOffsetDeg: number }
+  | { readonly surface: 'mesh'; readonly rotationOffsetDeg: null }
+
 export interface OutputWarpSet {
   /** The set's content id — `warpImport.warpSetId`, and its storage key. */
   id: string
+  /**
+   * What the meshes address, when the bundle said; `null` when nothing
+   * did — loose `.data` files, or a bundle exported before its layout.
+   * It changes no pixel, since the rotation is already in the meshes, and
+   * the output ignores it. It rides the set because the set is the one
+   * record of what an output holds, and the panel shows it beside the
+   * content rotation, so an operator can see what was baked in rather
+   * than enter it a second time. Not part of the content id, for the same
+   * reason: two sets that draw the same are the same set.
+   */
+  texture: WarpTexture | null
   meshes: OutputWarpMesh[]
 }
 

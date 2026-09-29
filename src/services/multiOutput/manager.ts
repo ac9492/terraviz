@@ -79,8 +79,8 @@ import {
   assembleWarpSet,
   readWarpSources,
   type WarpImportRefusal,
-  type WarpLayoutSource,
-  type WarpSetMesh,
+  type WarpPlacement,
+  type WarpSet,
   type WarpSource,
   type WarpSourcesResult,
 } from './warpImport'
@@ -271,8 +271,12 @@ export type WarpAssignment =
   | { readonly ok: false; readonly refusal: WarpAssignRefusal }
 
 /** The set as it crosses to the output: the meshes without the file names, which it has no use for. */
-function wireWarpSet(id: string, meshes: readonly WarpSetMesh[]): OutputWarpSet {
-  return { id, meshes: meshes.map(({ id: meshId, viewport, text }) => ({ id: meshId, viewport: { ...viewport }, text })) }
+function wireWarpSet(id: string, set: WarpSet): OutputWarpSet {
+  return {
+    id,
+    texture: set.texture === null ? null : { ...set.texture },
+    meshes: set.meshes.map(({ id: meshId, viewport, text }) => ({ id: meshId, viewport: { ...viewport }, text })),
+  }
 }
 
 /** What the operator chose when adding an output. */
@@ -814,8 +818,9 @@ export class MultiOutputManager {
 
   /**
    * Put a warp set on a `projector-warp` output (rung 16): assemble it by
-   * the operator's layout answer, store it under its own key, point the
-   * output at it and send it — or refuse, changing nothing.
+   * its bundle's own layout or by the operator's answer, store it under
+   * its own key, point the output at it and send it — or refuse, changing
+   * nothing.
    *
    * Stored **before** the output is pointed at it, so a set that does not
    * fit is refused whole and the output keeps the one it had. The set it
@@ -825,18 +830,18 @@ export class MultiOutputManager {
   async importWarpSet(
     label: string,
     sources: readonly WarpSource[],
-    layout: WarpLayoutSource,
+    placement: WarpPlacement,
   ): Promise<WarpAssignment> {
     const record = this.records.get(label)
     if (!record) return { ok: false, refusal: { code: 'no-output' } }
     if (record.mode !== 'projector-warp') return { ok: false, refusal: { code: 'not-a-warp-output' } }
-    const assembled = assembleWarpSet(sources, layout)
+    const assembled = assembleWarpSet(sources, placement)
     if (!assembled.ok) return assembled
     const stored = this.warpStore.write(assembled.id, assembled.set, new Date(this.nowMs()).toISOString())
     if (!stored.ok) return { ok: false, refusal: { code: 'storage', reason: stored.reason } }
     const previous = record.warpRef
     record.warpRef = assembled.id
-    record.render = { ...record.render, warp: wireWarpSet(assembled.id, assembled.set.meshes) }
+    record.render = { ...record.render, warp: wireWarpSet(assembled.id, assembled.set) }
     this.persist()
     if (previous !== assembled.id) this.releaseWarp(previous)
     if (record.ready) await this.emit(record, record.render, OUTPUT_RENDER_CONFIG_EVENT)
@@ -1173,7 +1178,7 @@ export class MultiOutputManager {
       )
       return null
     }
-    return wireWarpSet(output.warpId, read.set.meshes)
+    return wireWarpSet(output.warpId, read.set)
   }
 
   /**

@@ -278,8 +278,24 @@ describe('the Outputs panel', () => {
     expect(row.textContent).toContain("this display's own 3840×2160")
     // The field turns the content; the rig's own rotation is in the warp.
     expect(row.querySelector('label[for="output-rotation-output-1"]')!.textContent).toBe('Content rotation (°)')
-    expect(row.textContent).toContain('Warp rotation: unknown')
+    // No set, so no warp to have a rotation.
+    expect(row.textContent).not.toContain('Warp rotation')
     expect(row.querySelector('.output-warp')).not.toBeNull()
+  })
+
+  it("states the warp's own rotation beside the content rotation, as the bundle said it", async () => {
+    const { mgr, records } = fakeManager()
+    const warp = {
+      id: '0123456789abcdef',
+      texture: { surface: 'sphere', rotationOffsetDeg: 37 } as const,
+      meshes: [{ id: 'P1', viewport: { x: 0, y: 0, w: 1, h: 1 }, text: '' }],
+    }
+    const base = record('output-1', monitor())
+    records.push({ ...base, mode: 'projector-warp', warpRef: warp.id, render: { ...base.render, warp } })
+    mount(mgr)
+    await until(() => $('.output-item') !== null, 'the row')
+
+    expect($('.output-item')!.textContent).toContain('Warp rotation: 37°, already in the meshes')
   })
 
   it('shows a new output and takes its display out of the picker', async () => {

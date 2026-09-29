@@ -171,6 +171,8 @@ describe('sphere-sim\'s own bundle', () => {
   it('lists every entry in the order the writer put them, README first', () => {
     expect(directory(BUNDLE).map((e) => e.name)).toEqual([
       'README.txt',
+      // Second, since sphere-sim#52: where each mesh goes.
+      'layout.json',
       'warp/P1.data',
       'warp/P2.data',
       'warp/P3.data',

@@ -7,10 +7,12 @@ import type { OutputMonitor, OutputRecord, WarpAssignRefusal } from '../services
 import { defaultRenderConfig } from '../services/multiOutput/protocol'
 import type { WarpSource } from '../services/multiOutput/warpImport'
 import type { WarpMesh } from '../output/projectorWarp'
+import type { BundleLayout } from '../services/multiOutput/warpImport'
 import {
   buildWarpSection,
   describeWarpRefusal,
   rasterStretchPercent,
+  warpRotationNote,
   type OutputWarpManager,
 } from './outputWarpUI'
 
@@ -46,7 +48,11 @@ function source(id: string, aspect = 16 / 9): WarpSource {
 
 function fakeManager() {
   const mgr = {
-    readWarpFiles: vi.fn(async () => ({ ok: true as const, sources: [source('P1'), source('P3')] as readonly WarpSource[] })),
+    readWarpFiles: vi.fn(async () => ({
+      ok: true as const,
+      sources: [source('P1'), source('P3')] as readonly WarpSource[],
+      layout: null as BundleLayout | null,
+    })),
     importWarpSet: vi.fn(async () => ({ ok: true as const, id: '0123456789abcdef', meshes: 2 })),
     clearOutputWarp: vi.fn(async () => {}),
     setOutputRenderConfig: vi.fn(async () => {}),
@@ -95,6 +101,27 @@ describe('rasterStretchPercent', () => {
   })
 })
 
+/** A placed pair's layout, as sphere-sim writes it: halves at full height of a 3840×1080 display. */
+const PAIR: BundleLayout = {
+  framebuffer: { width: 3840, height: 1080 },
+  texture: { surface: 'sphere', rotationOffsetDeg: 37 },
+  projectors: [
+    { id: 'P1', viewport: { x: 0, y: 0, w: 0.5, h: 1 } },
+    { id: 'P2', viewport: { x: 0.5, y: 0, w: 0.5, h: 1 } },
+  ],
+}
+
+describe('warpRotationNote', () => {
+  const set = (texture: BundleLayout['texture'] | null) => ({ id: '0123456789abcdef', texture, meshes: [] })
+  it('says what the bundle baked in, that nothing said, or nothing at all with no set', () => {
+    expect(warpRotationNote(null)).toBeNull()
+    expect(warpRotationNote(set(null))).toContain('unknown')
+    expect(warpRotationNote(set({ surface: 'sphere', rotationOffsetDeg: 37 }))).toContain('37°')
+    expect(warpRotationNote(set({ surface: 'sphere', rotationOffsetDeg: 0 }))).toContain('0°')
+    expect(warpRotationNote(set({ surface: 'mesh', rotationOffsetDeg: null }))).toContain('none')
+  })
+})
+
 describe('describeWarpRefusal', () => {
   it('words every refusal, naming what the operator has to find', () => {
     const cases: [WarpAssignRefusal, string[]][] = [
@@ -115,6 +142,15 @@ describe('describeWarpRefusal', () => {
       [{ code: 'layout', reason: 'unplaceable', ids: ['P5'] }, ['P5']],
       [{ code: 'layout', reason: 'duplicate', ids: ['P1'] }, ['P1', 'one quadrant']],
       [{ code: 'set', set: { code: 'overlap', ids: ['P1', 'P2'] } }, ['overlap']],
+      [
+        { code: 'bundle-layout', file: 'rig.zip/layout.json', problem: { code: 'format', format: 'sphere-sim/projector-layout@2' } },
+        ['rig.zip/layout.json', 'projector-layout@2', 'does not read'],
+      ],
+      [
+        { code: 'bundle-layout', file: 'rig.zip/layout.json', problem: { code: 'unknown-mesh', mesh: 'warp/P9.data' } },
+        ['rig.zip/layout.json', 'unknown-mesh: warp/P9.data'],
+      ],
+      [{ code: 'bundle-layout', file: 'rig.zip/layout.json', problem: { code: 'origin' } }, ['(origin)']],
       [{ code: 'no-output' }, ['no longer open']],
       [{ code: 'not-a-warp-output' }, ['projector-warp']],
       [{ code: 'storage', reason: 'no-room' }, ['no room']],
@@ -138,6 +174,7 @@ describe('buildWarpSection', () => {
     resetBody()
     const warp = {
       id: '0123456789abcdef',
+      texture: null,
       meshes: [
         { id: 'P1', viewport: { x: 0, y: 0, w: 0.5, h: 0.5 }, text: '' },
         { id: 'P2', viewport: { x: 0.5, y: 0, w: 0.5, h: 0.5 }, text: '' },
@@ -153,10 +190,11 @@ describe('buildWarpSection', () => {
     await until(() => section.querySelector('.output-warp-choose') !== null, 'the layout question')
 
     expect(section.textContent).toContain('Read 2 meshes: P1, P3.')
-    const cells = [...section.querySelectorAll('.output-warp-quadrant')]
+    // In reading order, top row first, as the display would be read.
+    const cells = [...section.querySelectorAll('.output-warp-cell')]
     expect(cells.map((c) => c.textContent)).toEqual(['P3', 'P4', 'P1', 'P2'])
     expect(cells.filter((c) => c.classList.contains('is-filled')).map((c) => c.textContent)).toEqual(['P3', 'P1'])
-    expect(section.querySelector('.output-warp-quadrants')!.getAttribute('aria-hidden')).toBe('true')
+    expect(section.querySelector('.output-warp-layout')!.getAttribute('aria-hidden')).toBe('true')
     expect(raw.importWarpSet).not.toHaveBeenCalled()
 
     section.querySelector<HTMLButtonElement>('.output-warp-choose')!.click()
@@ -196,6 +234,61 @@ describe('buildWarpSection', () => {
     expect(announced()).toContain('No warp set')
   })
 
+  it("draws a bundle's own layout and imports it on one click, asking nothing", async () => {
+    const mgr = fakeManager()
+    mgr.raw.readWarpFiles.mockResolvedValue({ ok: true, sources: [source('P1'), source('P2')], layout: PAIR })
+    const { section } = mountSection({}, mgr)
+    pick(section, ['placed.zip'])
+    await until(() => section.querySelector('.output-warp-choose') !== null, 'the layout')
+
+    expect(section.textContent).toContain('The bundle says where each mesh goes')
+    expect(section.textContent).not.toContain('Science On a Sphere')
+    const cells = [...section.querySelectorAll<HTMLElement>('.output-warp-cell')]
+    expect(cells.map((c) => [c.textContent, c.style.left, c.style.bottom, c.style.width, c.style.height])).toEqual([
+      ['P1', '0%', '0%', '50%', '100%'],
+      ['P2', '50%', '0%', '50%', '100%'],
+    ])
+    expect(cells.every((c) => c.classList.contains('is-filled'))).toBe(true)
+    // The diagram is hidden from a screen reader, so the mapping is said in words.
+    const said = [...section.querySelectorAll('.sr-only li')].map((li) => li.textContent)
+    expect(said).toEqual([
+      'P1: 50% of the display wide and 100% tall, 0% in from the left edge and 0% up from the bottom.',
+      'P2: 50% of the display wide and 100% tall, 50% in from the left edge and 0% up from the bottom.',
+    ])
+    expect(section.textContent).toContain("The sphere's rotation, 37°, is already in these meshes.")
+
+    const choose = section.querySelector<HTMLButtonElement>('.output-warp-choose')!
+    expect(choose.textContent).toBe('Import')
+    choose.click()
+    await until(() => repaint.mock.calls.length > 0, 'the repaint')
+    expect(mgr.raw.importWarpSet).toHaveBeenCalledWith('output-1', expect.any(Array), PAIR)
+  })
+
+  it('compares the display a bundle was solved for with this one', async () => {
+    const mgr = fakeManager()
+    const quadrants = (framebuffer: BundleLayout['framebuffer']): BundleLayout => ({
+      framebuffer,
+      texture: { surface: 'mesh', rotationOffsetDeg: null },
+      projectors: [{ id: 'P1', viewport: { x: 0, y: 0, w: 0.5, h: 0.5 } }],
+    })
+    const read = async (layout: BundleLayout) => {
+      mgr.raw.readWarpFiles.mockResolvedValue({ ok: true, sources: [source('P1')], layout })
+      const { section } = mountSection({}, mgr)
+      pick(section, ['rig.zip'])
+      await until(() => section.querySelector('.output-warp-choose') !== null, 'the layout')
+      const text = section.textContent ?? ''
+      resetBody()
+      return text
+    }
+
+    // This display is 3840×2160: the same size says nothing, twice the size
+    // is a resample, and another shape is a stretch.
+    expect(await read(quadrants({ width: 3840, height: 2160 }))).not.toContain('Solved for')
+    expect(await read(quadrants({ width: 7680, height: 4320 }))).toContain('the same shape, so every mesh is resampled')
+    expect(await read(quadrants({ width: 4096, height: 2160 }))).toContain('a different shape, so the picture will be stretched')
+    expect(await read(quadrants({ width: 3840, height: 2160 }))).toContain("a model's own texture layout")
+  })
+
   it('imports nothing when the operator declines', async () => {
     const { section, raw } = mountSection()
     pick(section, ['P1.data', 'P3.data'])
@@ -209,7 +302,7 @@ describe('buildWarpSection', () => {
 
   it('warns, before the choice, when a mesh is not the shape of its quadrant', async () => {
     const mgr = fakeManager()
-    mgr.raw.readWarpFiles.mockResolvedValue({ ok: true, sources: [source('P1', 4 / 3)] })
+    mgr.raw.readWarpFiles.mockResolvedValue({ ok: true, sources: [source('P1', 4 / 3)], layout: null })
     const { section } = mountSection({}, mgr)
     pick(section, ['P1.data'])
     await until(() => section.querySelector('.output-warp-choose') !== null, 'the layout question')

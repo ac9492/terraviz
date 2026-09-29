@@ -25,13 +25,16 @@
  * the same correction, lossily, for SOS's own renderer, and the config is
  * the site's.
  *
- * **A layout is never inferred.** The one layout on offer today is SOS's
- * quadrants, and only as the operator's explicit answer, because a placed
- * rig's `P1`…`P4` are not SOS's quadrants and a bundle does not yet say
- * where its meshes go ([zyra-project/sphere-sim#49]). When bundles state
- * their layout, that becomes a second `WarpLayoutSource`; a build that
- * predates it refuses such a stored set, which is the direction a mismatch
- * should fail.
+ * **A layout is never inferred.** There are two, and neither is a guess.
+ * A bundle from sphere-sim#52 on carries `layout.json`, which says where
+ * each mesh goes and what its `u` addresses; the meshes are paired with it
+ * by each entry's `mesh` path, never by projector id, because a placed
+ * rig's `P1`…`P4` are not SOS's quadrants. Anything else — loose `.data`
+ * files, or a bundle from before that — can be placed in SOS's quadrants,
+ * but only as the operator's explicit answer. A `layout.json` this build
+ * cannot read is a refusal, never a reason to fall back to asking: the
+ * bundle said where its meshes go, and a guess where it said so is the
+ * silent misplacement the file exists to end.
  *
  * The parser and the set check are imported from `projectorWarp` rather
  * than restated: a set is re-read by the same functions on restore and by
@@ -51,7 +54,9 @@ import {
   type WarpRefusal,
   type WarpSetEntry,
   type WarpSetRefusal,
+  type WarpViewport,
 } from '../../output/projectorWarp'
+import type { WarpTexture } from './protocol'
 import { crc32, readStoredEntry, readZipDirectory, type StoredZipRefusal } from './storedZip'
 
 /** A file as the panel hands it over: its own name, and its bytes. */
@@ -72,7 +77,7 @@ export interface WarpSource {
 }
 
 /** Where a set's viewports came from. Never an inference from ids. */
-export type WarpLayoutSource = 'sos-quadrants'
+export type WarpLayoutSource = 'sos-quadrants' | 'bundle'
 
 export interface WarpSetMesh extends WarpSetEntry {
   readonly sourceName: string
@@ -80,8 +85,47 @@ export interface WarpSetMesh extends WarpSetEntry {
 
 export interface WarpSet {
   readonly layoutFrom: WarpLayoutSource
+  /** What the meshes' `u` addresses, as the bundle stated it; `null` when nothing did. */
+  readonly texture: WarpTexture | null
   readonly meshes: readonly WarpSetMesh[]
 }
+
+/**
+ * A bundle's `layout.json` (sphere-sim#52), read and paired with the
+ * meshes beside it. Only what the import needs: the viewport of every
+ * mesh, the display they divide, and what their `u` addresses.
+ */
+export interface BundleLayout {
+  /** The display every viewport divides, in pixels, as the calibration holds it. */
+  readonly framebuffer: { readonly width: number; readonly height: number }
+  readonly texture: WarpTexture
+  /** One per mesh, by the mesh's own id — paired through its `mesh` path, never matched by id. */
+  readonly projectors: readonly { readonly id: string; readonly viewport: WarpViewport }[]
+}
+
+/** How a set is placed: by its bundle's own layout, or in SOS's quadrants on the operator's answer. */
+export type WarpPlacement = 'sos-quadrants' | BundleLayout
+
+/**
+ * Why a `layout.json` could not be used. `format` carries what the file
+ * said it was, since a newer sphere-sim is the likeliest reason and the
+ * operator's remedy differs; the others name the entry to blame where
+ * there is one.
+ */
+export type BundleLayoutProblem =
+  | { readonly code: 'not-json' }
+  | { readonly code: 'format'; readonly format: string }
+  | { readonly code: 'origin' }
+  | { readonly code: 'framebuffer' }
+  | { readonly code: 'texture' }
+  | { readonly code: 'projectors' }
+  /** An entry names a mesh the archive does not hold at `warp/<id>.data`. */
+  | { readonly code: 'unknown-mesh'; readonly mesh: string }
+  | { readonly code: 'listed-twice'; readonly mesh: string }
+  /** A mesh in the archive that the layout does not place. */
+  | { readonly code: 'unlisted-mesh'; readonly mesh: string }
+  /** An entry whose `id` is not the id its own mesh file carries. */
+  | { readonly code: 'id-mismatch'; readonly mesh: string; readonly id: string }
 
 /**
  * The most bytes one import reads. A sphere-sim bundle is a few hundred
@@ -110,12 +154,19 @@ export type WarpImportRefusal =
   /** Not UTF-8 text, so not a mesh. */
   | { readonly code: 'not-text'; readonly file: string }
   | { readonly code: 'mesh'; readonly file: string; readonly mesh: WarpRefusal }
+  /** The bundle's own `layout.json`, which this build cannot use. */
+  | { readonly code: 'bundle-layout'; readonly file: string; readonly problem: BundleLayoutProblem }
   /** The chosen layout cannot place these ids: one it has no place for, or two for one place. */
   | { readonly code: 'layout'; readonly reason: 'unplaceable' | 'duplicate'; readonly ids: readonly string[] }
   | { readonly code: 'set'; readonly set: WarpSetRefusal }
 
 export type WarpSourcesResult =
-  | { readonly ok: true; readonly sources: readonly WarpSource[] }
+  | {
+      readonly ok: true
+      readonly sources: readonly WarpSource[]
+      /** The bundle's own layout, paired and checked; `null` when there is none to read. */
+      readonly layout: BundleLayout | null
+    }
   | { readonly ok: false; readonly refusal: WarpImportRefusal }
 
 export type WarpSetAssembly =
@@ -131,6 +182,13 @@ export type WarpSetAssembly =
 
 /** Exactly what sphere-sim writes: one level under `warp/`, at the archive's root. */
 const ARCHIVE_MESH = /^warp\/([^/]+)\.data$/
+/** Where sphere-sim writes the layout: the archive's root, under this name and no other. */
+const LAYOUT_ENTRY = 'layout.json'
+/**
+ * The only format this build reads. sphere-sim bumps it when a reader of
+ * `@1` would misread the file, so any other value is a different contract.
+ */
+const LAYOUT_FORMAT = 'sphere-sim/projector-layout@1'
 /** A picked file: any case, since a renamed file is still the file. */
 const PICKED_MESH = /\.data$/i
 const ARCHIVE = /\.zip$/i
@@ -159,6 +217,79 @@ function readSource(id: string, sourceName: string, bytes: Uint8Array): SourceRe
   return { ok: true, source: { id, sourceName, text, mesh: parsed.mesh } }
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
+
+type LayoutParse =
+  | { readonly ok: true; readonly layout: BundleLayout }
+  | { readonly ok: false; readonly problem: BundleLayoutProblem }
+
+/**
+ * `layout.json`'s text, read against the meshes the archive holds — each
+ * given as its entry name and the id that name carries. Fail-closed, field
+ * by field, to sphere-sim's own statement of what a reader must do: the
+ * format exactly, the origin stated, a framebuffer in whole pixels, the
+ * surface and its rotation as a pair, and **one entry per mesh, paired by
+ * its `mesh` path** — an entry naming a mesh the archive lacks, a mesh
+ * listed twice or not at all, or an `id` that is not its own mesh's, is
+ * the layout and the meshes disagreeing about which projectors exist, and
+ * a reader that picked one would be the misplacement the file ends.
+ * Fields this build does not know are ignored: sphere-sim adds fields
+ * within a format and bumps it only for ones a reader would misread.
+ * Whether the viewports fit the framebuffer and share no pixels is
+ * `placeWarpSet`'s, run on the paired set after this.
+ */
+export function parseBundleLayout(
+  text: string,
+  meshes: readonly { readonly entryName: string; readonly id: string }[],
+): LayoutParse {
+  const fail = (problem: BundleLayoutProblem): LayoutParse => ({ ok: false, problem })
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    return fail({ code: 'not-json' })
+  }
+  if (!isRecord(raw)) return fail({ code: 'not-json' })
+  if (raw.format !== LAYOUT_FORMAT) return fail({ code: 'format', format: String(raw.format) })
+  if (raw.origin !== 'bottom-left') return fail({ code: 'origin' })
+  const fb = raw.framebuffer
+  const pixels = (n: unknown): n is number => Number.isInteger(n) && (n as number) > 0
+  if (!isRecord(fb) || !pixels(fb.width) || !pixels(fb.height)) return fail({ code: 'framebuffer' })
+
+  let texture: WarpTexture
+  if (raw.surface === 'sphere' && isFiniteNumber(raw.rotationOffsetDeg)) {
+    texture = { surface: 'sphere', rotationOffsetDeg: raw.rotationOffsetDeg }
+  } else if (raw.surface === 'mesh' && raw.rotationOffsetDeg === null) {
+    texture = { surface: 'mesh', rotationOffsetDeg: null }
+  } else {
+    return fail({ code: 'texture' })
+  }
+
+  if (!Array.isArray(raw.projectors)) return fail({ code: 'projectors' })
+  const idOf = new Map(meshes.map((m) => [m.entryName, m.id]))
+  const listed = new Set<string>()
+  const projectors: { id: string; viewport: WarpViewport }[] = []
+  for (const entry of raw.projectors as unknown[]) {
+    if (!isRecord(entry) || typeof entry.id !== 'string' || typeof entry.mesh !== 'string') {
+      return fail({ code: 'projectors' })
+    }
+    const vp = entry.viewport
+    if (!isRecord(vp) || ![vp.x, vp.y, vp.w, vp.h].every(isFiniteNumber)) return fail({ code: 'projectors' })
+    const id = idOf.get(entry.mesh)
+    if (id === undefined) return fail({ code: 'unknown-mesh', mesh: entry.mesh })
+    if (listed.has(entry.mesh)) return fail({ code: 'listed-twice', mesh: entry.mesh })
+    listed.add(entry.mesh)
+    if (entry.id !== id) return fail({ code: 'id-mismatch', mesh: entry.mesh, id: entry.id })
+    projectors.push({ id, viewport: { x: vp.x as number, y: vp.y as number, w: vp.w as number, h: vp.h as number } })
+  }
+  const unlisted = meshes.find((m) => !listed.has(m.entryName))
+  if (unlisted !== undefined) return fail({ code: 'unlisted-mesh', mesh: unlisted.entryName })
+  return { ok: true, layout: { framebuffer: { width: fb.width, height: fb.height }, texture, projectors } }
+}
+
 function fromArchive(file: WarpImportFile): WarpSourcesResult {
   const directory = readZipDirectory(file.bytes)
   if (!directory.ok) return refuse({ code: 'archive', file: file.name, zip: directory.refusal })
@@ -182,7 +313,41 @@ function fromArchive(file: WarpImportFile): WarpSourcesResult {
     if (!one.ok) return one
     sources.push(one.source)
   }
-  return { ok: true, sources }
+
+  // The layout, when the bundle carries one: read through the same
+  // checksum as the meshes, then checked as a set here — so a layout whose
+  // viewports overlap or leave the framebuffer is refused before the panel
+  // draws it, not after the operator has agreed to it.
+  const layoutEntry = directory.entries.find((entry) => entry.name === LAYOUT_ENTRY)
+  if (layoutEntry === undefined) return { ok: true, sources, layout: null }
+  const layoutFile = named(LAYOUT_ENTRY)
+  const read = readStoredEntry(file.bytes, layoutEntry)
+  if (!read.ok) return refuse({ code: 'archive', file: file.name, zip: read.refusal })
+  let text: string
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(read.bytes)
+  } catch {
+    return refuse({ code: 'bundle-layout', file: layoutFile, problem: { code: 'not-json' } })
+  }
+  const parsed = parseBundleLayout(
+    text,
+    meshes.map(({ entry, id }) => ({ entryName: entry.name, id })),
+  )
+  if (!parsed.ok) return refuse({ code: 'bundle-layout', file: layoutFile, problem: parsed.problem })
+  const placed = placeWarpSet(placedEntries(sources, parsed.layout))
+  if (!placed.ok) return refuse({ code: 'set', set: placed.refusal })
+  return { ok: true, sources, layout: parsed.layout }
+}
+
+/** Each source with the viewport its bundle gives it — `parseBundleLayout` has already paired every one. */
+function placedEntries(sources: readonly WarpSource[], layout: BundleLayout): WarpSetMesh[] {
+  const viewportOf = new Map(layout.projectors.map((p) => [p.id, p.viewport]))
+  return sources.map((s) => ({
+    id: s.id,
+    viewport: viewportOf.get(s.id) as WarpViewport,
+    text: s.text,
+    sourceName: s.sourceName,
+  }))
 }
 
 function fromMeshFiles(files: readonly WarpImportFile[]): WarpSourcesResult {
@@ -201,7 +366,9 @@ function fromMeshFiles(files: readonly WarpImportFile[]): WarpSourcesResult {
     if (!one.ok) return one
     sources.push(one.source)
   }
-  return { ok: true, sources }
+  // Loose files carry no layout: `layout.json` sits at the bundle's root,
+  // beside `warp/` rather than in it, so no one pick of a folder holds both.
+  return { ok: true, sources, layout: null }
 }
 
 /**
@@ -223,28 +390,49 @@ export function readWarpSources(files: readonly WarpImportFile[]): WarpSourcesRe
 }
 
 /**
- * The set, placed by the operator's answer, and checked the way a restore
- * and the output will check it — so a set this returns is one both will
- * accept, and a refusal here is the operator's to act on rather than a
- * surprise at the next launch.
+ * The set, placed by its bundle's layout or by the operator's answer, and
+ * checked the way a restore and the output will check it — so a set this
+ * returns is one both will accept, and a refusal here is the operator's
+ * to act on rather than a surprise at the next launch.
+ *
+ * A bundle layout must place exactly these sources, which a layout and
+ * sources from one read always do; anything else is a caller that mixed
+ * two reads, refused as `unplaceable` rather than half-placed.
  */
-export function assembleWarpSet(sources: readonly WarpSource[], layout: WarpLayoutSource): WarpSetAssembly {
+export function assembleWarpSet(sources: readonly WarpSource[], placement: WarpPlacement): WarpSetAssembly {
   if (sources.length === 0) return refuse({ code: 'set', set: { code: 'no-meshes' } })
-  const quadrants = sosQuadrantLayout(sources.map((s) => s.id))
-  if (!quadrants.ok) {
-    // `empty` cannot arrive: there is at least one source.
-    const reason = quadrants.code === 'duplicate' ? 'duplicate' : 'unplaceable'
-    return refuse({ code: 'layout', reason, ids: quadrants.ids })
+  let meshes: WarpSetMesh[]
+  if (placement === 'sos-quadrants') {
+    const quadrants = sosQuadrantLayout(sources.map((s) => s.id))
+    if (!quadrants.ok) {
+      // `empty` cannot arrive: there is at least one source.
+      const reason = quadrants.code === 'duplicate' ? 'duplicate' : 'unplaceable'
+      return refuse({ code: 'layout', reason, ids: quadrants.ids })
+    }
+    meshes = sources.map((s, i) => ({
+      id: s.id,
+      viewport: quadrants.viewports[i],
+      text: s.text,
+      sourceName: s.sourceName,
+    }))
+  } else {
+    const placedIds = new Set(placement.projectors.map((p) => p.id))
+    const sourceIds = new Set(sources.map((s) => s.id))
+    const unplaceable = [
+      ...sources.filter((s) => !placedIds.has(s.id)).map((s) => s.id),
+      ...placement.projectors.filter((p) => !sourceIds.has(p.id)).map((p) => p.id),
+    ]
+    if (unplaceable.length > 0 || placement.projectors.length !== sources.length) {
+      return refuse({ code: 'layout', reason: 'unplaceable', ids: unplaceable })
+    }
+    meshes = placedEntries(sources, placement)
   }
-  const meshes: WarpSetMesh[] = sources.map((s, i) => ({
-    id: s.id,
-    viewport: quadrants.viewports[i],
-    text: s.text,
-    sourceName: s.sourceName,
-  }))
   const checked = placeWarpSet(meshes)
   if (!checked.ok) return refuse({ code: 'set', set: checked.refusal })
-  const set: WarpSet = { layoutFrom: layout, meshes }
+  const set: WarpSet =
+    placement === 'sos-quadrants'
+      ? { layoutFrom: 'sos-quadrants', texture: null, meshes }
+      : { layoutFrom: 'bundle', texture: { ...placement.texture }, meshes }
   return { ok: true, set, id: warpSetId(meshes), placed: checked.placed }
 }
 

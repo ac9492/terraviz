@@ -290,5 +290,14 @@
   "outputs.warp.refusal.meshAtLine": "As outputs.warp.refusal.mesh, with {line} the line number in the file where the problem is.",
   "outputs.warp.refusal.noMeshes": "Error for a ZIP with no warp files. \"warp/<id>.data\" is the literal path inside the archive — keep it exactly.",
   "outputs.warp.refusal.set": "Error when a set of warp meshes is refused as a whole. {reason} is a short technical code such as \"overlap\", shown as is — do not translate it.",
-  "outputs.warp.warpRotationUnknown": "Read-only note beside the content-rotation control. The warp file already contains the sphere's own mechanical rotation, but does not say what it is, so the app cannot show it."
+  "outputs.warp.warpRotationUnknown": "Read-only note beside the content-rotation control. The warp file already contains the sphere's own mechanical rotation, but does not say what it is, so the app cannot show it.",
+  "outputs.warp.bundlePlaces": "Shown in the Outputs panel after a sphere-sim bundle is read, above a small diagram of the display. The bundle's layout.json states where each projector's warp mesh goes.",
+  "outputs.warp.useBundleLayout": "Button that imports a sphere-sim bundle whose own file says where each mesh goes. Short; keep it a verb.",
+  "outputs.warp.viewportEntry": "Screen-reader text for one box of the display diagram. {id} is a projector name such as P1; the percentages place its rectangle on the display, measured from the bottom-left corner. Keep 'left' and 'bottom' literal: the picture does not mirror in right-to-left languages.",
+  "outputs.warp.bakedRotationSphere": "{degrees} is the rotation sphere-sim already built into the warp meshes. 'Content rotation' is the name of a separate control in the same panel.",
+  "outputs.warp.framebufferResampled": "{solvedWidth}×{solvedHeight} is the display size the calibration was made for; {width}×{height} is this display's. Keep the × sign.",
+  "outputs.warp.framebufferStretched": "{solvedWidth}×{solvedHeight} is the display size the calibration was made for; {width}×{height} is this display's. Keep the × sign.",
+  "outputs.warp.warpRotationSphere": "Shown beside the 'Content rotation' control. {degrees} is a rotation already built into the warp by sphere-sim; the operator must not enter it again.",
+  "outputs.warp.refusal.bundleLayout": "{file} is a file inside the bundle, such as rig.zip/layout.json. {reason} is a technical code left untranslated, such as unknown-mesh: warp/P5.data.",
+  "outputs.warp.refusal.bundleLayoutFormat": "{file} is a file inside the bundle, such as rig.zip/layout.json. {format} is the format name the file declares, left untranslated."
 }

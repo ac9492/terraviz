@@ -46,7 +46,7 @@
 import { t } from '../i18n'
 import { logger } from '../utils/logger'
 import { announcePolite } from './domUtils'
-import { buildWarpSection, type OutputWarpManager } from './outputWarpUI'
+import { buildWarpSection, warpRotationNote, type OutputWarpManager } from './outputWarpUI'
 import type {
   AddOutputOptions,
   OutputMonitor,
@@ -1079,9 +1079,10 @@ function buildRow(
     // Beside the rotation it qualifies: a sphere rig's own rotation is
     // baked into the warp, so the field above turns the *content*, and
     // the operator needs both numbers to know which turned the picture.
-    // A bundle cannot say the warp's yet, so this says it does not know
-    // rather than guessing from the rig.
-    item.appendChild(message(t('outputs.warp.warpRotationUnknown'), 'output-note'))
+    // It is what the bundle's layout said; a set nothing stated it for
+    // says it does not know rather than guessing from the rig.
+    const rotation = warpRotationNote(record.render.warp)
+    if (rotation !== null) item.appendChild(message(rotation, 'output-note'))
     item.appendChild(
       buildWarpSection(mgr, record, record.monitor, displayName, () => {
         void refresh(body)

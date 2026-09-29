@@ -35,7 +35,7 @@ import { until } from '../test-utils'
 import { DECORATION_UNIFORMS } from './layerStack'
 import { NADIR_LUT_SIZE } from './atmosphereNadir'
 
-import { DEFAULT_BLEND_GAMMA, DEFAULT_FRAMEBUFFER_WIDTH, type OutputMode } from '../services/multiOutput/protocol'
+import { DEFAULT_BLEND_GAMMA, DEFAULT_FRAMEBUFFER_WIDTH, type OutputMode, type OutputWarpSet } from '../services/multiOutput/protocol'
 import { WARP_ATTRIBUTES, WARP_UNIFORMS, WARP_VERTEX_SHADER } from './projectorWarp'
 
 /** A 60 Hz display's callback interval, the ordinary case. */
@@ -492,8 +492,9 @@ describe('the sphere texture binding', () => {
   describe('a projector-warp window (rung 16)', () => {
     /** The smallest mesh the parser accepts: 2×2, 16:9, every node drawn. */
     const MESH = ['2', '2 2', '-1.777778 1 0.25 0.75 1', '1.777778 1 0.75 0.75 1', '-1.777778 -1 0.25 0.25 0.5', '1.777778 -1 0.75 0.25 0.5', ''].join('\n')
-    const SET = {
+    const SET: OutputWarpSet = {
       id: '0123456789abcdef',
+      texture: null,
       meshes: [
         { id: 'P1', viewport: { x: 0, y: 0, w: 0.5, h: 0.5 }, text: MESH },
         { id: 'P2', viewport: { x: 0.5, y: 0, w: 0.5, h: 0.5 }, text: MESH },
@@ -563,7 +564,7 @@ describe('the sphere texture binding', () => {
       const { scene, quad } = await warpScene()
       scene.setWarp(SET)
 
-      scene.setWarp({ id: 'fedcba9876543210', meshes: [SET.meshes[0], { ...SET.meshes[1], viewport: SET.meshes[0].viewport }] })
+      scene.setWarp({ id: 'fedcba9876543210', texture: null, meshes: [SET.meshes[0], { ...SET.meshes[1], viewport: SET.meshes[0].viewport }] })
 
       expect(quad.visible).toBe(false)
       expect(scene.warpState()).toMatchObject({ state: 'refused', refusal: { code: 'overlap' } })

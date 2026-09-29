@@ -11,6 +11,7 @@ import {
   assembleWarpSet,
   readWarpSources,
   warpSetId,
+  type BundleLayout,
   type WarpImportFile,
   type WarpImportRefusal,
   type WarpSource,
@@ -18,11 +19,18 @@ import {
 
 const enc = new TextEncoder()
 
-/** sphere-sim's own bundle: four 5×5 meshes, and an older 4×4 `P1` under `restore/`. */
-const BUNDLE: WarpImportFile = {
-  name: 'sphere-sim-files.zip',
-  bytes: new Uint8Array(readFileSync(resolve(__dirname, '../../output/fixtures/projectorWarp/sphere-sim-bundle.zip'))),
-}
+const fixture = (name: string): Uint8Array =>
+  new Uint8Array(readFileSync(resolve(__dirname, '../../output/fixtures/projectorWarp', name)))
+
+/**
+ * sphere-sim's own bundle: four 5×5 meshes, its `layout.json` placing them
+ * in SOS's quadrants, and an older 4×4 `P1` under `restore/`.
+ */
+const BUNDLE: WarpImportFile = { name: 'sphere-sim-files.zip', bytes: fixture('sphere-sim-bundle.zip') }
+/** The same archive with no layout — how every bundle from before sphere-sim#52 reads. */
+const BARE: WarpImportFile = { name: 'sphere-sim-files.zip', bytes: fixture('sphere-sim-bundle-no-layout.zip') }
+/** Two placed projectors, which sphere-sim splits into halves at full height. */
+const PLACED: WarpImportFile = { name: 'placed.zip', bytes: fixture('sphere-sim-placed-bundle.zip') }
 
 /** The smallest mesh the parser accepts: 2×2, 16:9, every node drawn. */
 const MESH = ['2', '2 2', '-1.777778 1 0.25 0.75 1', '1.777778 1 0.75 0.75 1', '-1.777778 -1 0.25 0.25 1', '1.777778 -1 0.75 0.25 1', ''].join('\n')
@@ -98,6 +106,36 @@ function refusalOf(files: readonly WarpImportFile[]): WarpImportRefusal {
   if (read.ok) throw new Error('expected a refusal')
   return read.refusal
 }
+
+function layoutOf(files: readonly WarpImportFile[]): BundleLayout | null {
+  const read = readWarpSources(files)
+  if (!read.ok) throw new Error(`expected sources, got ${JSON.stringify(read.refusal)}`)
+  return read.layout
+}
+
+/** A `layout.json` as sphere-sim writes one for a placed pair, with fields replaced by `over`. */
+function layoutText(over: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    format: 'sphere-sim/projector-layout@1',
+    origin: 'bottom-left',
+    framebuffer: { width: 3840, height: 1080 },
+    surface: 'sphere',
+    rotationOffsetDeg: 30,
+    projectors: [
+      { id: 'P1', mesh: 'warp/P1.data', viewport: { x: 0, y: 0, w: 0.5, h: 1 } },
+      { id: 'P2', mesh: 'warp/P2.data', viewport: { x: 0.5, y: 0, w: 0.5, h: 1 } },
+    ],
+    ...over,
+  })
+}
+
+/** Two meshes and a layout, the layout under `name` — the root's `layout.json` unless a test moves it. */
+const laidOut = (text: string, name = 'layout.json'): WarpImportFile =>
+  archive([
+    { name, text },
+    { name: 'warp/P1.data', text: MESH },
+    { name: 'warp/P2.data', text: MESH },
+  ])
 
 describe('readWarpSources — a sphere-sim bundle', () => {
   it('takes the four meshes at the root, in rig order, and names where each came from', () => {
@@ -221,9 +259,11 @@ describe('readWarpSources — what was picked', () => {
 
 describe('assembleWarpSet', () => {
   it('places a bundle in SOS\'s quadrants when the operator says so, and checks it whole', () => {
-    const assembled = assembleWarpSet(sources([BUNDLE]), 'sos-quadrants')
+    const assembled = assembleWarpSet(sources([BARE]), 'sos-quadrants')
     if (!assembled.ok) throw new Error(JSON.stringify(assembled.refusal))
     expect(assembled.set.layoutFrom).toBe('sos-quadrants')
+    // Nothing said what the meshes address, and nothing is guessed.
+    expect(assembled.set.texture).toBeNull()
     for (const mesh of assembled.set.meshes) {
       expect(mesh.viewport).toEqual(SOS_QUADRANT_VIEWPORTS[mesh.id as SosQuadrantId])
     }
@@ -244,6 +284,27 @@ describe('assembleWarpSet', () => {
     expect(assembleWarpSet(named, 'sos-quadrants')).toMatchObject({ refusal: { code: 'layout', ids: ['Projector 1'] } })
   })
 
+  it("places by the bundle's own layout, carrying what it says the meshes address", () => {
+    const read = readWarpSources([BUNDLE])
+    if (!read.ok || read.layout === null) throw new Error('the bundle carries a layout')
+    const assembled = assembleWarpSet(read.sources, read.layout)
+    if (!assembled.ok) throw new Error(JSON.stringify(assembled.refusal))
+    expect(assembled.set.layoutFrom).toBe('bundle')
+    expect(assembled.set.texture).toEqual({ surface: 'sphere', rotationOffsetDeg: 0 })
+    // The same meshes in the same places are the same set, however they
+    // were placed: what a set addresses changes no pixel, so no id.
+    const asked = assembleWarpSet(sources([BARE]), 'sos-quadrants')
+    expect(asked.ok && asked.id).toBe(assembled.id)
+  })
+
+  it('refuses a layout and sources from different reads, rather than half-placing them', () => {
+    const placed = layoutOf([PLACED])!
+    expect(assembleWarpSet(sources([BUNDLE]), placed)).toEqual({
+      ok: false,
+      refusal: { code: 'layout', reason: 'unplaceable', ids: ['P3', 'P4'] },
+    })
+  })
+
   it('refuses two meshes for one quadrant, and an empty set', () => {
     const one = sources([file('P1.data', MESH)])[0]
     expect(assembleWarpSet([one, one], 'sos-quadrants')).toEqual({
@@ -251,6 +312,108 @@ describe('assembleWarpSet', () => {
       refusal: { code: 'layout', reason: 'duplicate', ids: ['P1'] },
     })
     expect(assembleWarpSet([], 'sos-quadrants')).toEqual({ ok: false, refusal: { code: 'set', set: { code: 'no-meshes' } } })
+  })
+})
+
+describe("readWarpSources — a bundle's own layout (sphere-sim#52)", () => {
+  it('reads the layout sphere-sim writes, and pairs each mesh with its viewport', () => {
+    const layout = layoutOf([BUNDLE])
+    expect(layout).toEqual({
+      framebuffer: { width: 7680, height: 4320 },
+      texture: { surface: 'sphere', rotationOffsetDeg: 0 },
+      projectors: (['P1', 'P2', 'P3', 'P4'] as const).map((id) => ({ id, viewport: SOS_QUADRANT_VIEWPORTS[id] })),
+    })
+  })
+
+  it('places a placed pair in halves at full height, where the quadrants would misplace it', () => {
+    const read = readWarpSources([PLACED])
+    if (!read.ok || read.layout === null) throw new Error('the placed bundle carries a layout')
+    expect(read.layout.projectors).toEqual([
+      { id: 'P1', viewport: { x: 0, y: 0, w: 0.5, h: 1 } },
+      { id: 'P2', viewport: { x: 0.5, y: 0, w: 0.5, h: 1 } },
+    ])
+    const byLayout = assembleWarpSet(read.sources, read.layout)
+    if (!byLayout.ok) throw new Error(JSON.stringify(byLayout.refusal))
+    expect(byLayout.set.layoutFrom).toBe('bundle')
+    expect(byLayout.set.meshes.map((m) => m.viewport)).toEqual(read.layout.projectors.map((p) => p.viewport))
+    // SOS's quadrants take the same two ids without complaint — and put
+    // them in the bottom row. Only the layout can say they are wrong.
+    const byQuadrants = assembleWarpSet(read.sources, 'sos-quadrants')
+    expect(byQuadrants.ok && byQuadrants.set.meshes.map((m) => m.viewport)).toEqual([
+      SOS_QUADRANT_VIEWPORTS.P1,
+      SOS_QUADRANT_VIEWPORTS.P2,
+    ])
+  })
+
+  it('reads no layout from a bundle without one, from loose files, or from anywhere but the root', () => {
+    expect(layoutOf([BARE])).toBeNull()
+    expect(layoutOf([file('P1.data', MESH)])).toBeNull()
+    expect(layoutOf([laidOut(layoutText(), 'config/layout.json')])).toBeNull()
+    expect(layoutOf([laidOut(layoutText(), 'restore/layout.json')])).toBeNull()
+  })
+
+  it("reads a model's layout, whose rotation is null, and ignores fields it does not know", () => {
+    const text = layoutText({ surface: 'mesh', rotationOffsetDeg: null, note: 'added within @1' })
+    expect(layoutOf([laidOut(text)])?.texture).toEqual({ surface: 'mesh', rotationOffsetDeg: null })
+    const withExtra = JSON.parse(layoutText())
+    withExtra.projectors[0].serial = 'ABC-123'
+    expect(layoutOf([laidOut(JSON.stringify(withExtra))])?.projectors).toHaveLength(2)
+  })
+
+  it('refuses a layout it cannot use, and never falls back to asking', () => {
+    const problem = (text: string): unknown => {
+      const refusal = refusalOf([laidOut(text)])
+      if (refusal.code !== 'bundle-layout') throw new Error(`expected a layout refusal, got ${refusal.code}`)
+      expect(refusal.file).toBe('rig.zip/layout.json')
+      return refusal.problem
+    }
+    const base = JSON.parse(layoutText())
+    const entry = (i: number, over: Record<string, unknown>) => ({ ...base.projectors[i], ...over })
+
+    expect(problem('{ not json')).toEqual({ code: 'not-json' })
+    expect(problem('[]')).toEqual({ code: 'not-json' })
+    expect(problem(layoutText({ format: 'sphere-sim/projector-layout@2' }))).toEqual({
+      code: 'format',
+      format: 'sphere-sim/projector-layout@2',
+    })
+    expect(problem(layoutText({ origin: 'top-left' }))).toEqual({ code: 'origin' })
+    for (const framebuffer of [{ width: 0, height: 1080 }, { width: 3840.5, height: 1080 }, { width: 3840 }, null]) {
+      expect(problem(layoutText({ framebuffer })), JSON.stringify(framebuffer)).toEqual({ code: 'framebuffer' })
+    }
+    expect(problem(layoutText({ rotationOffsetDeg: null }))).toEqual({ code: 'texture' })
+    expect(problem(layoutText({ surface: 'mesh', rotationOffsetDeg: 30 }))).toEqual({ code: 'texture' })
+    expect(problem(layoutText({ surface: 'dome' }))).toEqual({ code: 'texture' })
+    expect(problem(layoutText({ projectors: {} }))).toEqual({ code: 'projectors' })
+    expect(problem(layoutText({ projectors: [entry(0, { viewport: { x: 0, y: 0, w: '0.5', h: 1 } }), base.projectors[1]] }))).toEqual({
+      code: 'projectors',
+    })
+    expect(problem(layoutText({ projectors: [entry(0, { mesh: 'warp/P9.data' }), base.projectors[1]] }))).toEqual({
+      code: 'unknown-mesh',
+      mesh: 'warp/P9.data',
+    })
+    // The restore point's copy is not a mesh of this archive either.
+    expect(problem(layoutText({ projectors: [entry(0, { mesh: 'restore/warp/P1.data' }), base.projectors[1]] }))).toEqual({
+      code: 'unknown-mesh',
+      mesh: 'restore/warp/P1.data',
+    })
+    expect(problem(layoutText({ projectors: [base.projectors[0], base.projectors[0]] }))).toEqual({
+      code: 'listed-twice',
+      mesh: 'warp/P1.data',
+    })
+    expect(problem(layoutText({ projectors: [base.projectors[0]] }))).toEqual({ code: 'unlisted-mesh', mesh: 'warp/P2.data' })
+    expect(problem(layoutText({ projectors: [entry(0, { id: 'P2' }), entry(1, { id: 'P1' })] }))).toEqual({
+      code: 'id-mismatch',
+      mesh: 'warp/P1.data',
+      id: 'P2',
+    })
+  })
+
+  it('refuses a layout whose viewports overlap or leave the display, before the panel draws it', () => {
+    const base = JSON.parse(layoutText())
+    const overlap = layoutText({ projectors: [{ ...base.projectors[0], viewport: { x: 0, y: 0, w: 0.6, h: 1 } }, base.projectors[1]] })
+    expect(refusalOf([laidOut(overlap)])).toEqual({ code: 'set', set: { code: 'overlap', ids: ['P1', 'P2'] } })
+    const outside = layoutText({ projectors: [base.projectors[0], { ...base.projectors[1], viewport: { x: 0.6, y: 0, w: 0.5, h: 1 } }] })
+    expect(refusalOf([laidOut(outside)])).toMatchObject({ code: 'set', set: { code: 'bad-viewport' } })
   })
 })
 

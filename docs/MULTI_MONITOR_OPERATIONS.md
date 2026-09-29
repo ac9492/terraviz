@@ -299,11 +299,13 @@ must reach the app as **one monitor at their combined size**:
 | AMD Eyefinity | AMD's own control software; the same caveat |
 | `xrandr --setmonitor` | Linux, **X11 only**; no Wayland equivalent. Below |
 
-**Each head goes where its projector's quadrant is**, the same
-arrangement SOS itself uses: P1 bottom left, P2 bottom right, P3
-top left, P4 top right. This is the one thing a warp cannot check.
-A projector fed the wrong quadrant still shows a plausible globe,
-just not the right part of it.
+**Each head goes where its projector's part of the display is.**
+For SOS that is the arrangement SOS itself uses: P1 bottom left, P2
+bottom right, P3 top left, P4 top right. A current bundle's layout
+says where each mesh goes on the display, and the import draws it;
+nothing can say which cable feeds which head. This is the one thing a
+warp cannot check. A projector fed the wrong part still shows a
+plausible globe, just not the right part of it.
 
 On Linux without a vendor span, place the heads, then declare them
 one monitor. `<P1>` and the others are the names a bare `xrandr`
@@ -343,30 +345,42 @@ installation's session starts.
    unwarped globe thrown across calibrated projectors is exactly
    what this mode exists never to show.
 3. **Import warp…** and pick the ZIP as sphere-sim exported it. A
-   bundle that was extracted and zipped again is usually refused;
-   pick the `.data` files from its `warp` folder instead, all of
-   them at once.
+   bundle that was extracted and zipped again is usually refused.
+   Get the original if you can: the `.data` files from its `warp`
+   folder, picked all at once, also import, but they arrive without
+   the layout beside them, so step 6's question follows.
 4. **Never pick files from `restore/warp/`.** The bundle's
    `restore` folder keeps the *previous* calibration, in the same
    format and under the same file names. The ZIP import ignores it.
    A file picked by hand from there is imported as though it were
    the new calibration.
-5. The panel lists the meshes it read and asks where they go: **Use
-   SOS quadrants**, or **Cancel**. A diagram shows each mesh in the
-   quadrant it would take.
+5. **A bundle from a current sphere-sim says where its meshes go**,
+   in a `layout.json` beside them. The panel lists the meshes it read
+   and draws the display with each one in its own place. It says what
+   rotation is already in them, and compares the display they were
+   solved for with this one. Check the drawing against the cabling
+   (above), then **Import**. There is nothing to choose: the bundle
+   decided, from the rig sphere-sim calibrated.
+6. **Anything that does not say where its meshes go** — loose `.data`
+   files, or a bundle exported before sphere-sim added the layout —
+   gets a question instead: **Use SOS quadrants**, or **Cancel**. A
+   diagram shows each mesh in the quadrant it would take.
    - An SOS rig: use the quadrants.
-   - **Any other rig: cancel.** A rig sphere-sim placed itself, such
-     as two projectors or a row of four, reuses SOS's projector
-     names in other places. The quadrants would send every mesh to
-     the wrong projector, and the picture would still look right.
-     Such a rig needs its layout written into the bundle
-     ([zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49))
-     and a build of this app that reads it. Neither exists yet.
-6. Once chosen, the row reads *Drawing 4 meshes: P1, P2, P3, P4*.
+   - **Any other rig: cancel**, and import the ZIP from a current
+     sphere-sim instead. A rig sphere-sim placed itself, such as two
+     projectors or a row of four, reuses SOS's projector names in other
+     places. The quadrants would send every mesh to the wrong projector,
+     and the picture would still look right.
+7. Once imported, the row reads *Drawing 4 meshes: P1, P2, P3, P4*.
    The HUD's `warp` line gives the set's id and the same count (§4).
 
-**A stretch warning under the question** means a quadrant of this
-display is not the shape its mesh was solved for. The usual cause
+**A `layout.json` this build cannot read refuses the import**; it
+never falls back to the question. The likeliest reason is a newer
+sphere-sim, and the message names the format it found. The remedy is
+a newer build of this app, not a different file.
+
+**A stretch warning before the import** means the part of this
+display a mesh would fill is not the shape it was solved for. The usual cause
 is a 4096×2160 span, whose 2048×1080 quadrants stretch a 16:9
 calibration by 7%. Span at the resolution the calibration used —
 1920×1080 per projector for SOS — rather than accept it, unless you
@@ -427,9 +441,11 @@ every picture twice. Leave the content rotation at 0, turn on the
 calibration pattern, and check that the prime meridian sits where
 the calibration put it.
 
-Below the rotation, the row shows the warp's own rotation as
-*unknown*. sphere-sim's bundles do not state it yet, and the app
-does not guess it from the rig.
+Below the rotation, the row shows the warp's own rotation, as the
+bundle's `layout.json` states it. That note gives the number for a
+sphere, and says none for a model, whose own texture layout anchors
+it. For loose files or an older bundle it says *unknown*: nothing
+stated the rotation, and the app does not guess it from the rig.
 
 #### Edges you should expect
 
@@ -599,10 +615,11 @@ title bar, no menu bar. Exits:
 - **A projector rig on hardware.** §3.6 has not been run on one.
   The first run's checks are `MULTI_MONITOR_PLAN.md` Appendix B,
   steps W1–W9.
-- **Any projector layout but SOS's quadrants.** It needs sphere-sim
-  to write the layout into its bundle
-  ([zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49))
-  and a build of this app that reads it.
+- **A placed rig from sphere-sim's page.** The bundle format carries
+  any layout, and this app reads it, but sphere-sim's page exports
+  from the install rig, so every bundle it writes today places SOS's
+  quadrants. A placed rig's bundle has to come from sphere-sim's own
+  builders until the page exports one.
 - **Spanning on Linux.** `xrandr --setmonitor` needs X11, and the
   only X11 run so far — under WSL — aborted when an output window
   opened. Whether WSL caused it is unsettled; see the plan's

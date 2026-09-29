@@ -3084,7 +3084,7 @@ without rolling the whole feature back.
 | 13 | `multi-output: failure recovery — crashes, stalls, GPU loss, monitor unplug` | Manager gains crash detection (no-graceful-close window destroy → toast + record removal), 3-strikes-per-monitor crash storm guard, 2 s `availableMonitors()` poll for unplug detection, `getAll()` boot scan to reattach orphaned `output-*` windows after a control-window **page reload or webview failure** — not a crash of the process, which takes every window with it; see case 6, which corrects this. Output gains `webglcontextlost` / `webglcontextrestored` listeners with full scene rebuild, IPC-silence watchdog (5 s → stale state, 60 s → orphan), one HLS stream rebuild on a `loadStream()` rejection with frozen last-good-frame (no retry ladder — `hlsService` already spends a 3× budget before rejecting). Outputs panel renders per-output health badges (healthy / stale / stalled / monitor-missing). New Tier A `output_failure` event fired from manager via `analytics/emitter.ts` with `{ kind, retries, recovered }` (Open Question 3 decided). See §3 "Failure recovery". **Landed so far: 13a** (crash-vs-hand-close classification, the storm guard, record removal, `onOutputsChanged` for the panel), **13b** (all three Tier A events, `outputTelemetry.ts`), **case 3** (the output's `linkWatchdog`, the manager's `output_health_check` resync, the panel's stale badge and its announcement) and **case 6** (`adoptOrphanedOutputs`, `OUTPUT_REATTACH_EVENT`, chained ahead of the restore at boot) and **case 5's detection and reporting** (`outputScene.gpuState()`, `output_gpu_lost` / `output_gpu_recovered`, the `gpu-lost` badge and the `gpu-loss` Tier A failure — much smaller than this row implied, because Three's `WebGLRenderer` already does the `preventDefault()` and the GL rebuild; see case 5). Still open: the unplug poll, the single HLS rebuild, case 5's 30 s no-restore timeout and its `gpu-loss-timeout` removal, the toast (no toast primitive exists), and the `perf_sample` extension (needs an `OutputEvent` arm carrying drift — see Open Question 3). | Yes (additive) |
 | 14 | `multi-output: calibration tooling — test pattern + rotation offset` | `src/output/datasetMirror.ts` recognises the `__terraviz_calibration__` sentinel id and renders a procedural test pattern (8-step grayscale ramp at the equator, RGB color bars at lat ±30°, lat/lon graticule with color-coded equator + prime meridian, named anchor crosshairs, N/S pole labels, live resolution counter — ~80 LOC GLSL). `src/output/equirectRtt.ts` adds the `uRotationOffsetRad` longitude rotation applied before the camera-offset ray-march. `outputUI.ts` adds the per-output "Rotation offset (°)" numeric + slider and a "Calibration" submenu. Persisted config gains `rotationOffsetDeg`. See §3 "Calibration tooling". **Landed, in two slices, and the second is built differently from this row.** **14a** is the rotation offset end to end: `uRotationOffsetRad` and its TS mirror, `rotationOffsetDeg` through `OutputViewSettings` and the persisted config, the degrees→radians conversion in `projectView`, and the panel's slider-plus-number. **14b** is the test pattern, as `src/output/calibrationPattern.ts` — a **2:1 canvas installed in an ordinary overlay slot**, not the ~80 LOC of GLSL this row specifies, and a **per-output switch on the render-config channel**, not the `__terraviz_calibration__` sentinel dataset. Both departures are argued at the top of §3 "Calibration tooling": a shader pattern would bypass the very sampling path it is meant to prove, and a sentinel dataset would put the pattern on every output at once — plus on the control window's own globe, which is where the operator is reading the rotation they are turning. There is no "Calibration submenu"; it is one toggle sitting directly above the rotation control it is used with. The pattern is the one operator choice in the panel that deliberately does **not** persist. | Yes (additive) |
 | 15 | `multi-output: operator runbook` | **Landed** — [`docs/MULTI_MONITOR_OPERATIONS.md`](MULTI_MONITOR_OPERATIONS.md), the deployment half this plan had deferred, and which a spike showed is not optional. It covers everything below and four things the ladder could not have predicted, all of them from hardware and all of them **silent** failures: the **gpu** field being unreadable on Linux (so §1.1's check moves outside the app, on the platform SOS installations most often run), the output monitor's **refresh rate** as a hard ceiling on its frame rate with a dock as the usual cause, and two Linux package prerequisites — GStreamer codecs, without which no HLS dataset plays, and fonts in two classes, without which every control renders as an empty box. Originally scoped as: Covers: **checking which GPU the webview actually got** (the renderer string surfaced by commit 11's debug overlay) and the per-OS override for a hybrid-graphics machine, since the app's own `powerPreference` is inert and a silent landing on the iGPU is undiagnosable from logs; **measuring this machine's decoder budget** rather than trusting a constant, and entering it in the Outputs panel's budget field (commit 11); disabling screen savers and display sleep (Open Question 5's documented half); the kiosk autostart entry from §3.6; and what each Outputs-panel health badge means in front of an audience. No code. | **Yes** (docs) |
-| 16 | `multi-output: projector-warp mode (sphere-sim warp import)` | **In progress** — the pure module landed 2026-09-29 (`src/output/projectorWarp.ts`: fail-closed parse, geometry build, blend, SOS's quadrant table, the whole-set check, and a parity fixture from sphere-sim's own tracer), and the import with it (`storedZip`, `warpImport`: a store-only ZIP reader that takes only the root's `warp/<id>.data`, since a bundle's restore point keeps the previous calibration under the same name), `projector-warp` as an `OutputMode` through protocol, aggregator, persistence and the spawn URL, and the set on the render-config channel with a key of its own per set (`warpStorage`, deleted only when the operator lets go of it), the scene that draws it — verified against the TypeScript mirror on SwiftShader — the panel's import, layout question, blend gamma and content-rotation label, and the runbook's section on spanning and importing (`MULTI_MONITOR_OPERATIONS.md` §3.6); a hardware pass on a sphere remains. Specified in §"Rung 16 — a sphere-sim warp bundle on one output", which opens roadmap Phase 3's sphere half now that its demand gate is met. One output on the spanned display carries a sphere-sim bundle's Bourke meshes, each placed in its viewport of the one framebuffer and drawn in one pass, so the projectors share one decoder and one swap and cannot drift apart at the seams. A new `projector-warp` mode rather than a flag, so a build without this rung refuses to spawn one instead of throwing an unwarped equirect across calibrated projectors. The ray-march runs per fragment — no render target, no second resample — at a unit direction the mesh interpolates in place of `(u, v)`, which takes the texture seam and the poles without a special case and, measured against sphere-sim's own tracer, matches `(u, v)` interpolation wherever that works. Three conventions that fail silently were measured against sphere-sim's own export and are specified there: the seam and the poles, a linear-light blend weight arriving at a display-space renderer, and a sphere rig's rotation already baked into the mesh, which is why rung 14a's offset becomes a content rotation under a warp and is never seeded from the rig. Not SOS-specific: any rig sphere-sim calibrates arrives in the same shape, on the sphere or on any surface unwrapped equirectangularly — a dome, an ellipsoid; only a model whose UV set is an atlas is out. A mesh is never placed by its projector id alone, because sphere-sim's placed rigs reuse SOS's ids in other places: the layout comes from the bundle, or from the operator explicitly choosing SOS's quadrants, or the import refuses. So an SOS rig is unblocked upstream and any other rig needs [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49) (the layout in the bundle); [zyra-project/sphere-sim#50](https://github.com/zyra-project/sphere-sim/issues/50) (the blend convention stated in `warp.ts`) makes every rig safer. | Yes (additive) |
+| 16 | `multi-output: projector-warp mode (sphere-sim warp import)` | **In progress** — the pure module landed 2026-09-29 (`src/output/projectorWarp.ts`: fail-closed parse, geometry build, blend, SOS's quadrant table, the whole-set check, and a parity fixture from sphere-sim's own tracer), and the import with it (`storedZip`, `warpImport`: a store-only ZIP reader that takes only the root's `warp/<id>.data`, since a bundle's restore point keeps the previous calibration under the same name), `projector-warp` as an `OutputMode` through protocol, aggregator, persistence and the spawn URL, and the set on the render-config channel with a key of its own per set (`warpStorage`, deleted only when the operator lets go of it), the scene that draws it — verified against the TypeScript mirror on SwiftShader — the panel's import, layout question, blend gamma and content-rotation label, and the runbook's section on spanning and importing (`MULTI_MONITOR_OPERATIONS.md` §3.6); a hardware pass on a sphere remains. Specified in §"Rung 16 — a sphere-sim warp bundle on one output", which opens roadmap Phase 3's sphere half now that its demand gate is met. One output on the spanned display carries a sphere-sim bundle's Bourke meshes, each placed in its viewport of the one framebuffer and drawn in one pass, so the projectors share one decoder and one swap and cannot drift apart at the seams. A new `projector-warp` mode rather than a flag, so a build without this rung refuses to spawn one instead of throwing an unwarped equirect across calibrated projectors. The ray-march runs per fragment — no render target, no second resample — at a unit direction the mesh interpolates in place of `(u, v)`, which takes the texture seam and the poles without a special case and, measured against sphere-sim's own tracer, matches `(u, v)` interpolation wherever that works. Three conventions that fail silently were measured against sphere-sim's own export and are specified there: the seam and the poles, a linear-light blend weight arriving at a display-space renderer, and a sphere rig's rotation already baked into the mesh, which is why rung 14a's offset becomes a content rotation under a warp and is never seeded from the rig. Not SOS-specific: any rig sphere-sim calibrates arrives in the same shape, on the sphere or on any surface unwrapped equirectangularly — a dome, an ellipsoid; only a model whose UV set is an atlas is out. A mesh is never placed by its projector id alone, because sphere-sim's placed rigs reuse SOS's ids in other places: the layout comes from the bundle, or from the operator explicitly choosing SOS's quadrants, or the import refuses. So an SOS rig was unblocked upstream from the start, and any other rig needed [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49) (the layout in the bundle). sphere-sim#52 answered it on 2026-09-29, and this build reads its `layout.json` — so a placed rig imports by its own layout once sphere-sim's page exports one. [zyra-project/sphere-sim#50](https://github.com/zyra-project/sphere-sim/issues/50) (the blend convention stated in `warp.ts`) is still open and makes every rig safer. | Yes (additive) |
 
 **Backout plan.** Reverting commit 9 leaves all the plumbing in
 place (manager, output bundle, capability) but removes the
@@ -3537,8 +3537,10 @@ set's assembly are `storedZip` and `warpImport` (§"Where the meshes
 live"); `projector-warp` is an `OutputMode` end to end (§"A new mode,
 not a render-config flag"); the set rides the render config and lives
 under a key of its own (`warpStorage`); the output draws it
-(§"The quad is already a mesh"); and the Outputs panel imports a bundle
-and asks the layout question (§"Prerequisites"). The operator's side,
+(§"The quad is already a mesh"); and the Outputs panel imports a bundle,
+placing it by its own `layout.json` when it carries one (sphere-sim#52,
+read since 2026-09-29) and asking the layout question when it does not
+(§"Prerequisites", §"Upstream requests"). The operator's side,
 spanning included, is `MULTI_MONITOR_OPERATIONS.md` §3.6. Appendix B's
 W steps on a sphere are what remain.
 Written 2026-09-26 against sphere-sim
@@ -3886,6 +3888,9 @@ interface PersistedWarpSet {
   version: 1
   importedAt: string
   layoutFrom: 'bundle' | 'sos-quadrants'  // never inferred from an id
+  // What u addresses, as layout.json states it; null when nothing did.
+  texture: { surface: 'sphere'; rotationOffsetDeg: number }
+         | { surface: 'mesh'; rotationOffsetDeg: null } | null
   meshes: {
     id: string          // from the filename, warp/<id>.data
     viewport: { x: number; y: number; w: number; h: number } // bottom-left
@@ -4076,8 +4081,12 @@ itself as a parsing mistake.
    proposes does not carry it as filed. A follow-up comment there
    (2026-09-27) requests it as an addition: the baked
    `rotationOffsetDeg` for a sphere rig, and an explicit none for a
-   mesh. Until a bundle states it — and so for every bundle today —
-   the panel shows the warp's rotation as unknown. The Boulder
+   mesh. ~~Until a bundle states it — and so for every bundle today —
+   the panel shows the warp's rotation as unknown.~~ **sphere-sim#52
+   states it (2026-09-29)**, and the row now shows what `layout.json`
+   says: the sphere's baked rotation in degrees, or none for a model.
+   It says "unknown" only where nothing says, meaning loose files or a
+   bundle from before #52. The Boulder
    preset's rotation is 0, which is exactly why a fixture made from it
    cannot catch this: the test needs a rig with a non-zero one.
    **Pinned, 2026-09-29,** with SOS's nominal rig turned 30°. With
@@ -4088,6 +4097,11 @@ itself as a parsing mistake.
 #### Prerequisites, one of them upstream
 
 - **The bundle carries no layout, and a filename cannot supply one.**
+  *Met upstream 2026-09-29: sphere-sim#52 writes `layout.json`, and
+  this build reads it. See "Upstream requests" below for what the
+  reader enforces.* The rest of this item stands for everything that
+  has no layout — loose files, and bundles from before #52 — which is
+  why the question is kept.
   `bundle.ts` does not write the viewports, so a mesh pairs with its
   place in the framebuffer only through the projector id in its
   filename — and an id does not determine a place. `nominalRig` names
@@ -4221,6 +4235,49 @@ the file every consumer actually reads. The first was filed before two
 findings above, and a follow-up comment on it (2026-09-27) withdraws
 the default by id it describes and requests the warp's baked rotation
 as an addition to its manifest (convention 3).
+
+**The first has landed: sphere-sim#52, merged 2026-09-29**, with the
+rotation in it. Its bundles carry a root `layout.json`,
+`sphere-sim/projector-layout@1`, with these fields:
+
+- the framebuffer in pixels;
+- `origin: "bottom-left"`, said out loud;
+- `surface` and `rotationOffsetDeg` as a pair: a sphere with the
+  rotation already taken off `u`, or a model with `null`;
+- one entry per mesh, `{ id, mesh, viewport }`, where `mesh` is the
+  archive path to pair by.
+
+**This build reads it, the same day** (`warpImport.parseBundleLayout`):
+
+- **Fail-closed, field by field.**
+  - The format must match exactly, and a newer one is refused by name.
+  - Every mesh must be paired by its `mesh` path. An entry naming a
+    mesh the archive lacks is refused, and so is one naming
+    `restore/warp/…`. So is a mesh listed twice or not at all, or an
+    `id` that is not its own mesh's.
+  - The viewports go through `placeWarpSet` before the panel draws
+    them.
+- **A layout this build cannot use is a refusal, never a fallback to
+  the question.** The bundle said where its meshes go, and guessing
+  there would be the misplacement the file exists to end.
+- **With a layout, nothing is asked.** The panel shows the display with
+  each mesh in its own place, the rotation already in them, and the
+  display they were solved for against this one. One click imports.
+- **The question is kept** for what has no layout: loose `.data`
+  files, whose `layout.json` sits beside `warp/` rather than in it, and
+  bundles exported before #52.
+- **The texture rides the set.** It is stored with it and shown in the
+  row as the warp's rotation. It is not part of the content id, since it
+  changes no pixel, so one set placed either way is one set.
+- **Fixtures.** They are regenerated at `cc44237` and cover three
+  bundles: the SOS one with its layout, the same without, and a placed
+  pair, which sphere-sim lays out as halves at full height. The meshes
+  came out byte-identical.
+
+The sphere-sim page still exports from the install rig, so every
+bundle it writes today places SOS's quadrants. Nothing here waits on
+that, but a placed rig's bundle will not come from the page until it
+does. #50 is still open.
 
 **Cost:** about rung 14's. The pure warp module and the ZIP reader; the
 `projector-warp` arm through protocol, aggregator and persistence; the
@@ -6613,19 +6670,22 @@ size — 3840×2160 for SOS's four 1920×1080 projectors. Add an
 output there with **Output type** set to the projector rig.
 Before any import, the row says it has no warp set, the HUD
 reads `warp  none`, and the projectors are black — never an
-unwarped globe. Import the bundle. The panel lists the meshes it
-read, draws SOS's quadrants with each one in the place it would
-take (P1 bottom-left through P4 top-right), and waits for *Use
-SOS quadrants*. Once chosen, the row reads *Drawing 4 meshes:
-P1, P2, P3, P4*, and the HUD's `warp` line gives the set's id
-and the same count. The row does not repeat where the placement
-came from, because in this build it can only be SOS's quadrants
-chosen at import — the diagram is where it is shown.
+unwarped globe. Import the bundle. One exported since
+sphere-sim#52 carries its layout, so the panel lists the meshes
+it read and says the bundle places them. It draws the display
+with each mesh in its own place (P1 bottom-left through P4
+top-right, for SOS), states the rotation already in them, and
+imports on *Import*. It also compares the display the bundle was
+solved for with this one, and a different shape is a warning.
+Once imported, the row reads *Drawing 4 meshes: P1, P2, P3, P4*
+with the warp's rotation beside the content rotation, and the
+HUD's `warp` line gives the set's id and the same count.
 **Failure signature:** several monitors listed instead of one.
 The heads are not spanned at the OS level, and this rung cannot
 place a window across them. A mesh whose aspect differs from
-its quadrant's must be flagged before the choice, as a stretch
-warning with a percentage, rather than stretched in silence.
+the part of the display it fills must be flagged before the
+click, as a stretch warning with a percentage, rather than
+stretched in silence.
 
 **W2. Viewport placement.** (a) Turn on the calibration
 pattern. The graticule runs continuously across every seam, the
@@ -6635,23 +6695,23 @@ projector's share of the graticule on the wrong part of the
 sphere, or upside down — a mesh filed under the wrong viewport,
 or a viewport flipped in `y`. It is still plainly a graticule,
 which is why this step exists. (b) **A rig that is not SOS's
-quadrants** — this half needs no sphere. Import a bundle
-sphere-sim exported for a placed rig of two projectors. With no
-layout in it, the import asks: *Use SOS quadrants* or *Cancel*,
-with nothing chosen for the operator. The diagram puts P1 and P2
-in the bottom two quadrants — the wrong place for this rig, which
-is the point — and *Cancel* imports nothing. Once sphere-sim
-writes the layout
-([zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49))
-and a build reads it, the same bundle imports without asking
-and the diagram shows two halves side by side at full height.
-This build reads no layout from a bundle, so that half cannot
-run yet; record it as not run. **Failure signature:**
-the bundle placed without a question, or with the quadrants
-pre-selected — the silent id default this rung exists not to
-have. Two projectors are the case to use because both ids are
-ones the quadrants *can* place, so nothing but the rule catches
-it.
+quadrants** — this half needs no sphere. Import a bundle for a
+placed rig of two projectors, which sphere-sim lays out as two
+halves side by side at full height. It imports without asking,
+and the diagram shows the halves. sphere-sim's page does not
+export a placed rig yet, so use `sphere-sim-placed-bundle.zip`
+from `src/output/fixtures/projectorWarp/`: sphere-sim's own
+builders applied to one. Then pick the same two meshes as loose
+`.data` files, which carry no layout. Now the import asks: *Use
+SOS quadrants* or *Cancel*, with nothing chosen for the operator.
+The diagram puts P1 and P2 in the bottom two quadrants — the
+wrong place for this rig, which is the point — and *Cancel*
+imports nothing. **Failure signature:** the loose files placed
+without a question, or with the quadrants pre-selected — the
+silent id default this rung exists not to have. Or the bundle
+placed anywhere but its own halves. Two projectors are the case
+to use because both ids are ones the quadrants *can* place, so
+nothing but the rule catches it.
 
 **W3. The seam and a pole.** (a) With the pattern on, find the
 antimeridian anchor. The mesh cells around it render the
@@ -6687,9 +6747,10 @@ the row's *Blend gamma* and look again.
 
 **W5. No double rotation.** On a new `projector-warp` output the
 rotation reads 0, labelled as a content rotation, with the
-warp's own rotation beside it: "unknown" for every bundle
-until #49's manifest carries the rotation, which the follow-up
-there requests, and the bundle's figure after that. The prime
+warp's own rotation beside it once a set is imported. That note
+gives the figure the bundle's `layout.json` states (sphere-sim#52),
+says none for a model, and says "unknown" only for loose files or
+a bundle from before #52. The prime
 meridian sits where sphere-sim placed it. Set the content
 rotation to 90°: the whole picture turns by 90°, continuously
 across the seams. Re-import the same bundle and it is still 90°.

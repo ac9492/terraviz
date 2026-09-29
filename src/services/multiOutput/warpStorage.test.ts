@@ -18,6 +18,7 @@ const MESH = ['2', '2 2', '-1.777778 1 0.25 0.75 1', '1.777778 1 0.75 0.75 1', '
 
 const SET: WarpSet = {
   layoutFrom: 'sos-quadrants',
+  texture: null,
   meshes: [
     { id: 'P1', viewport: SOS_QUADRANT_VIEWPORTS.P1, text: MESH, sourceName: 'P1.data' },
     { id: 'P2', viewport: SOS_QUADRANT_VIEWPORTS.P2, text: MESH, sourceName: 'P2.data' },
@@ -61,13 +62,13 @@ describe('createWarpSetStore', () => {
     expect(read.placed[0].mesh.cols).toBe(2)
   })
 
-  it("carries sphere-sim's own bundle through import, storage and back", () => {
+  it("carries sphere-sim's own bundle through import, storage and back, layout and all", () => {
     const bundle = new Uint8Array(
       readFileSync(resolve(__dirname, '../../output/fixtures/projectorWarp/sphere-sim-bundle.zip')),
     )
     const sources = readWarpSources([{ name: 'sphere-sim-files.zip', bytes: bundle }])
-    if (!sources.ok) throw new Error(sources.refusal.code)
-    const assembled = assembleWarpSet(sources.sources, 'sos-quadrants')
+    if (!sources.ok || sources.layout === null) throw new Error('the bundle carries a layout')
+    const assembled = assembleWarpSet(sources.sources, sources.layout)
     if (!assembled.ok) throw new Error(assembled.refusal.code)
     const store = createWarpSetStore(memoryStorage())
 
@@ -75,6 +76,18 @@ describe('createWarpSetStore', () => {
     const read = store.read(assembled.id)
 
     expect(read.ok && read.placed.length).toBe(4)
+    expect(read.ok && read.set.layoutFrom).toBe('bundle')
+    expect(read.ok && read.set.texture).toEqual({ surface: 'sphere', rotationOffsetDeg: 0 })
+  })
+
+  it('reads a set stored before textures were as saying nothing', () => {
+    const storage = memoryStorage()
+    const { texture: _, ...before } = { version: WARP_SET_VERSION, importedAt: 'x', ...SET }
+    storage.map.set(WARP_SET_KEY_PREFIX + ID, JSON.stringify(before))
+
+    const read = createWarpSetStore(storage).read(ID)
+
+    expect(read.ok && read.set.texture).toBeNull()
   })
 
   it('finds nothing where nothing was written, or under an id no import could write', () => {
@@ -98,6 +111,23 @@ describe('createWarpSetStore', () => {
     expect(store.read(ID)).toEqual({ ok: false, reason: 'unreadable' })
     stored({ ...good, meshes: [{ ...SET.meshes[0], viewport: { x: 0, y: 0, w: '0.5', h: 0.5 } }] })
     expect(store.read(ID)).toEqual({ ok: false, reason: 'unreadable' })
+    // A texture is not in the content id, so its shape is what is checked:
+    // the two pairs sphere-sim writes, and only on a set its layout placed.
+    for (const texture of [
+      { surface: 'sphere', rotationOffsetDeg: null },
+      { surface: 'mesh', rotationOffsetDeg: 12 },
+      { surface: 'dome', rotationOffsetDeg: 0 },
+      'sphere',
+    ]) {
+      stored({ ...good, layoutFrom: 'bundle', texture })
+      expect(store.read(ID), JSON.stringify(texture)).toEqual({ ok: false, reason: 'unreadable' })
+    }
+    stored({ ...good, layoutFrom: 'bundle', texture: null })
+    expect(store.read(ID)).toEqual({ ok: false, reason: 'unreadable' })
+    stored({ ...good, layoutFrom: 'sos-quadrants', texture: { surface: 'sphere', rotationOffsetDeg: 0 } })
+    expect(store.read(ID)).toEqual({ ok: false, reason: 'unreadable' })
+    stored({ ...good, layoutFrom: 'bundle', texture: { surface: 'mesh', rotationOffsetDeg: null } })
+    expect(store.read(ID).ok).toBe(true)
   })
 
   it('refuses a set that changed after it was written', () => {

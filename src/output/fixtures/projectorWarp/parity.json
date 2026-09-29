@@ -1,7 +1,7 @@
 {
  "provenance": {
   "generator": "scripts/generate-warp-parity-fixtures.ts",
-  "sphereSimCommit": "d46515d50417b82428119fda2117424fc7b85d80",
+  "sphereSimCommit": "cc4423715beb0949a57b228406bf37432727f971",
   "note": "Meshes are formatWarpMesh output; samples are [px, py, u, v] with px/py raster pixels (y down, corner-to-corner as buildWarpExport spaces its nodes) and u/v the texel sphere-sim's tracer puts there, v up. Regenerate rather than edit."
  },
  "sosQuadrantViewports": [

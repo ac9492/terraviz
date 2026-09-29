@@ -2492,6 +2492,29 @@ describe('warp sets (rung 16)', () => {
     ])
     // The file names stay behind: the output has no use for them.
     expect(sent.warp?.meshes[0]).not.toHaveProperty('sourceName')
+    // Nothing picked said what the meshes address.
+    expect(sent.warp?.texture).toBeNull()
+  })
+
+  it("places by a bundle's own layout, and carries what it says the meshes address", async () => {
+    const { fake, manager, warpStore } = await warpOutput()
+    const layout = {
+      framebuffer: { width: 3840, height: 1080 },
+      texture: { surface: 'sphere', rotationOffsetDeg: 37 } as const,
+      projectors: [
+        { id: 'P1', viewport: { x: 0, y: 0, w: 0.5, h: 1 } },
+        { id: 'P2', viewport: { x: 0.5, y: 0, w: 0.5, h: 1 } },
+      ],
+    }
+
+    const result = await manager.importWarpSet('output-1', sources({ 'P1.data': MESH, 'P2.data': MESH }), layout)
+
+    if (!result.ok) throw new Error(JSON.stringify(result.refusal))
+    const sent = configEmits(fake.emitted)[0].config
+    expect(sent.warp?.meshes.map(m => m.viewport)).toEqual(layout.projectors.map(p => p.viewport))
+    expect(sent.warp?.texture).toEqual({ surface: 'sphere', rotationOffsetDeg: 37 })
+    const stored = warpStore.read(result.id)
+    expect(stored.ok && [stored.set.layoutFrom, stored.set.texture]).toEqual(['bundle', layout.texture])
   })
 
   it('refuses, changing nothing, for an output that is not a warp output or does not exist', async () => {
@@ -2596,7 +2619,7 @@ describe('warp sets (rung 16)', () => {
     const warpStore = createWarpSetStore(storage)
     const set = sources({ 'P3.data': MESH })
     const id = warpSetId([{ id: 'P3', viewport: { x: 0, y: 0.5, w: 0.5, h: 0.5 }, text: MESH }])
-    warpStore.write(id, { layoutFrom: 'sos-quadrants', meshes: [{ id: 'P3', viewport: { x: 0, y: 0.5, w: 0.5, h: 0.5 }, text: set[0].text, sourceName: 'P3.data' }] }, 'x')
+    warpStore.write(id, { layoutFrom: 'sos-quadrants', texture: null, meshes: [{ id: 'P3', viewport: { x: 0, y: 0.5, w: 0.5, h: 0.5 }, text: set[0].text, sourceName: 'P3.data' }] }, 'x')
     const fake = createFakeHost()
     const manager = makeManager(fake.host, {
       warpStore,
@@ -2612,6 +2635,27 @@ describe('warp sets (rung 16)', () => {
     const sent = configEmits(fake.emitted)[0].config
     expect(sent.warp?.id).toBe(id)
     expect(sent.warp?.meshes[0].viewport).toEqual({ x: 0, y: 0.5, w: 0.5, h: 0.5 })
+    expect(sent.warp?.texture).toBeNull()
+  })
+
+  it('restores what a stored set says its meshes address, so the panel can say it again', async () => {
+    const warpStore = createWarpSetStore(memoryWarpStorage())
+    const viewport = { x: 0, y: 0, w: 1, h: 1 }
+    const id = warpSetId([{ id: 'P1', viewport, text: MESH }])
+    const texture = { surface: 'mesh', rotationOffsetDeg: null } as const
+    warpStore.write(id, { layoutFrom: 'bundle', texture, meshes: [{ id: 'P1', viewport, text: MESH, sourceName: 'P1.data' }] }, 'x')
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host, {
+      warpStore,
+      store: memoryStore({
+        autoRestoreOnLaunch: true,
+        outputs: [{ ...persistedOn('output-1', MONITORS[0]), mode: 'projector-warp', warpId: id }],
+      }),
+    })
+
+    const [restored] = await manager.restoreOutputs()
+
+    expect(restored.render.warp?.texture).toEqual(texture)
   })
 
   it('restores an output whose set cannot be read as drawing nothing — and keeps the reference', async () => {
@@ -2644,8 +2688,8 @@ describe('warp sets (rung 16)', () => {
     const P3 = { x: 0, y: 0.5, w: 0.5, h: 0.5 }
     const good = warpSetId([{ id: 'P3', viewport: P3, text: MESH }])
     const damaged = warpSetId([{ id: 'P3', viewport: P3, text: OTHER }])
-    warpStore.write(good, { layoutFrom: 'sos-quadrants', meshes: [{ id: 'P3', viewport: P3, text: MESH, sourceName: 'P3.data' }] }, 'x')
-    warpStore.write(damaged, { layoutFrom: 'sos-quadrants', meshes: [{ id: 'P3', viewport: P3, text: OTHER, sourceName: 'P3.data' }] }, 'x')
+    warpStore.write(good, { layoutFrom: 'sos-quadrants', texture: null, meshes: [{ id: 'P3', viewport: P3, text: MESH, sourceName: 'P3.data' }] }, 'x')
+    warpStore.write(damaged, { layoutFrom: 'sos-quadrants', texture: null, meshes: [{ id: 'P3', viewport: P3, text: OTHER, sourceName: 'P3.data' }] }, 'x')
     // One byte changed after the write, the way a hand edit or a bad
     // sector would: still JSON, still a plausible mesh, a different set.
     const key = `${WARP_SET_KEY_PREFIX}${damaged}`

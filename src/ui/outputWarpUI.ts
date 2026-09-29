@@ -11,12 +11,15 @@
  * one self-contained flow with its own wrong answers, the same reason
  * the monitor diagram's arithmetic is exported rather than inline.
  *
- * **The layout is asked, never assumed.** A bundle does not yet say
- * where its meshes go (zyra-project/sphere-sim#49), and a placed rig's
- * `P1`…`P4` are not SOS's quadrants, so after a bundle is read the panel
- * shows what arrived, draws SOS's quadrants with each mesh in the place
- * it would take, and waits for the operator to choose them — or not.
- * Declining imports nothing; there is no silent default.
+ * **The layout is read or asked, never assumed.** A bundle from
+ * sphere-sim#52 on says where its meshes go in `layout.json`, and the
+ * panel draws that layout — the display with each mesh in its own place,
+ * and the rotation already baked into them — before a single click
+ * imports it. Anything else (loose `.data` files, an older bundle) gets
+ * the question instead: SOS's quadrants drawn with each mesh where they
+ * would put it, and the operator's explicit answer, because a placed
+ * rig's `P1`…`P4` are not SOS's quadrants. Declining imports nothing
+ * either way; there is no silent default.
  *
  * **The raster's shape is checked, not enforced.** A mesh's `x` span
  * states the aspect it was solved for, and a quadrant of this display
@@ -35,34 +38,46 @@
  */
 
 import { plural, t } from '../i18n'
+import { formatNumber } from '../i18n/format'
 import type { OutputMonitor, OutputRecord, WarpAssignRefusal, WarpAssignment, WarpFileLike } from '../services/multiOutput/manager'
-import type { OutputRenderConfig } from '../services/multiOutput/protocol'
-import type { WarpLayoutSource, WarpSource, WarpSourcesResult } from '../services/multiOutput/warpImport'
+import type { OutputRenderConfig, OutputWarpSet } from '../services/multiOutput/protocol'
+import type { BundleLayout, BundleLayoutProblem, WarpPlacement, WarpSource, WarpSourcesResult } from '../services/multiOutput/warpImport'
 import { logger } from '../utils/logger'
 import { announcePolite } from './domUtils'
 
 /** The slice of the manager the warp controls call. */
 export interface OutputWarpManager {
   readWarpFiles(files: readonly WarpFileLike[]): Promise<WarpSourcesResult>
-  importWarpSet(label: string, sources: readonly WarpSource[], layout: WarpLayoutSource): Promise<WarpAssignment>
+  importWarpSet(label: string, sources: readonly WarpSource[], placement: WarpPlacement): Promise<WarpAssignment>
   clearOutputWarp(label: string): Promise<void>
   setOutputRenderConfig(label: string, render: Partial<Omit<OutputRenderConfig, 'warp'>>): Promise<void>
 }
 
+/** A mesh's rect of the display: fractions, origin bottom-left. */
+interface Viewport {
+  readonly x: number
+  readonly y: number
+  readonly w: number
+  readonly h: number
+}
+
 /**
- * SOS's quadrants, restated for the diagram — P1 bottom-left, P2
- * bottom-right, P3 top-left, P4 top-right, as sphere-sim and SOS's own
- * `projectorInfo` have them. Restated rather than imported for the
- * type-only rule above; the viewports themselves are applied by the
- * manager from the one table in `projectorWarp`, never from this.
+ * SOS's quadrants, restated for the diagram and the shape check — P1
+ * bottom-left, P2 bottom-right, P3 top-left, P4 top-right, as sphere-sim
+ * and SOS's own `projectorInfo` have them. Restated rather than imported
+ * for the type-only rule above; the viewports a set is placed with are
+ * applied by the manager from the one table in `projectorWarp`, never
+ * from this.
  */
-const QUADRANT_ROWS: readonly (readonly string[])[] = [
-  ['P3', 'P4'],
-  ['P1', 'P2'],
+const SOS_QUADRANTS: readonly { readonly id: string; readonly viewport: Viewport }[] = [
+  { id: 'P1', viewport: { x: 0, y: 0, w: 0.5, h: 0.5 } },
+  { id: 'P2', viewport: { x: 0.5, y: 0, w: 0.5, h: 0.5 } },
+  { id: 'P3', viewport: { x: 0, y: 0.5, w: 0.5, h: 0.5 } },
+  { id: 'P4', viewport: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 } },
 ]
 
-/** The quadrant a mesh takes: half the display each way. */
-const QUADRANT = { w: 0.5, h: 0.5 }
+/** Two display shapes this close are one shape: a rounding, not a stretch. */
+const SAME_SHAPE = 0.01
 
 /**
  * How far a mesh's picture is stretched in its viewport, as a percentage,
@@ -120,6 +135,14 @@ export function describeWarpRefusal(refusal: WarpAssignRefusal): string {
       return refusal.reason === 'duplicate'
         ? t('outputs.warp.refusal.layoutDuplicate', { ids: refusal.ids.join(', ') })
         : t('outputs.warp.refusal.layoutUnplaceable', { ids: refusal.ids.join(', ') })
+    case 'bundle-layout':
+      // The format gets a sentence of its own: a newer sphere-sim is the
+      // likeliest reason, and the remedy is a different build, not a
+      // different file.
+      if (refusal.problem.code === 'format') {
+        return t('outputs.warp.refusal.bundleLayoutFormat', { file: refusal.file, format: refusal.problem.format })
+      }
+      return t('outputs.warp.refusal.bundleLayout', { file: refusal.file, reason: layoutProblemReason(refusal.problem) })
     case 'set':
       return t('outputs.warp.refusal.set', { reason: refusal.set.code })
     case 'no-output':
@@ -135,6 +158,25 @@ export function describeWarpRefusal(refusal: WarpAssignRefusal): string {
       return unreachable
     }
   }
+}
+
+/** A layout problem as the raw reason the panel carries: the code, and the entry to blame if there is one. */
+function layoutProblemReason(problem: BundleLayoutProblem): string {
+  return 'mesh' in problem ? `${problem.code}: ${problem.mesh}` : problem.code
+}
+
+/**
+ * The warp's own rotation, as the row states it beside the content
+ * rotation — what the bundle said is already in the meshes, so an
+ * operator can see it rather than enter it a second time. `null` with no
+ * set loaded, since there is no warp to have a rotation.
+ */
+export function warpRotationNote(warp: OutputWarpSet | null): string | null {
+  if (warp === null) return null
+  const texture = warp.texture
+  if (texture === null) return t('outputs.warp.warpRotationUnknown')
+  if (texture.surface === 'mesh') return t('outputs.warp.warpRotationMesh')
+  return t('outputs.warp.warpRotationSphere', { degrees: formatNumber(texture.rotationOffsetDeg, { maximumFractionDigits: 2 }) })
 }
 
 function paragraph(text: string, className: string): HTMLElement {
@@ -172,25 +214,67 @@ function statusLine(record: OutputRecord): HTMLElement {
 }
 
 /**
- * SOS's quadrants with each arrived mesh in the one it would take.
- * Presentational and `aria-hidden`: the key sentence beside it carries
- * the same mapping as text, and a grid of four unlabelled boxes is noise
- * to a screen reader. A picture of the physical display, so it never
- * mirrors under `dir="rtl"` — see `.output-warp-quadrants`.
+ * The display, drawn in its own shape, with each cell in its viewport.
+ * One picture for both paths: SOS's quadrants with the meshes that would
+ * fill them, or a bundle's own layout, every cell filled.
+ *
+ * Presentational and `aria-hidden`: the text beside it carries the same
+ * mapping, and boxes named only by their position are noise to a screen
+ * reader. A picture of the physical display, so it never mirrors under
+ * `dir="rtl"` — the cells are placed with **physical** `left` / `bottom`,
+ * like the monitor map's, and `.output-warp-layout` pins `direction: ltr`.
+ * Cells are appended in reading order, top row first, which is also the
+ * order a screen with the attribute ignored would speak them in.
  */
-function quadrantDiagram(ids: readonly string[]): HTMLElement {
-  const grid = document.createElement('div')
-  grid.className = 'output-warp-quadrants'
-  grid.setAttribute('aria-hidden', 'true')
-  for (const row of QUADRANT_ROWS) {
-    for (const quadrant of row) {
-      const cell = document.createElement('div')
-      cell.className = ids.includes(quadrant) ? 'output-warp-quadrant is-filled' : 'output-warp-quadrant'
-      cell.textContent = quadrant
-      grid.appendChild(cell)
-    }
+function layoutDiagram(
+  cells: readonly { readonly id: string; readonly viewport: Viewport; readonly filled: boolean }[],
+  display: { readonly width: number; readonly height: number },
+): HTMLElement {
+  const frame = document.createElement('div')
+  frame.className = 'output-warp-layout'
+  frame.setAttribute('aria-hidden', 'true')
+  frame.style.aspectRatio = `${display.width} / ${display.height}`
+  const ordered = [...cells].sort(
+    (a, b) => b.viewport.y + b.viewport.h - (a.viewport.y + a.viewport.h) || a.viewport.x - b.viewport.x,
+  )
+  const pct = (fraction: number): string => `${fraction * 100}%`
+  for (const { id, viewport, filled } of ordered) {
+    const cell = document.createElement('div')
+    cell.className = filled ? 'output-warp-cell is-filled' : 'output-warp-cell'
+    cell.textContent = id
+    cell.style.left = pct(viewport.x)
+    cell.style.bottom = pct(viewport.y)
+    cell.style.width = pct(viewport.w)
+    cell.style.height = pct(viewport.h)
+    frame.appendChild(cell)
   }
-  return grid
+  return frame
+}
+
+/** A share of the display, as a percentage an operator reads. */
+const percent = (fraction: number): string => formatNumber(fraction * 100, { maximumFractionDigits: 1 })
+
+/**
+ * The bundle's layout as text, one sentence per mesh, for a screen reader:
+ * the diagram's own content, since the diagram is hidden from one. Placed
+ * with the same bottom-left origin the file states, in words that do not
+ * depend on reading direction.
+ */
+function layoutAsText(layout: BundleLayout): HTMLElement {
+  const list = document.createElement('ul')
+  list.className = 'sr-only'
+  for (const { id, viewport } of layout.projectors) {
+    const item = document.createElement('li')
+    item.textContent = t('outputs.warp.viewportEntry', {
+      id,
+      width: percent(viewport.w),
+      height: percent(viewport.h),
+      left: percent(viewport.x),
+      bottom: percent(viewport.y),
+    })
+    list.appendChild(item)
+  }
+  return list
 }
 
 /**
@@ -256,7 +340,8 @@ export function buildWarpSection(
       .readWarpFiles(files)
       .then(read => {
         if (!read.ok) show(paragraph(describeWarpRefusal(read.refusal), 'output-error'))
-        else show(...askLayout(read.sources))
+        else if (read.layout !== null) show(...confirmBundleLayout(read.sources, read.layout))
+        else show(...askQuadrants(read.sources))
       })
       .catch(err => {
         // A file that went away between the pick and the read, or one the
@@ -270,41 +355,55 @@ export function buildWarpSection(
       })
   })
 
-  /** What arrived, where SOS's quadrants would put it, and the question. */
-  const askLayout = (sources: readonly WarpSource[]): HTMLElement[] => {
-    const ids = sources.map(s => s.id)
-    const parts: HTMLElement[] = [
-      paragraph(
-        plural(sources.length, { one: 'outputs.warp.arrived.one', other: 'outputs.warp.arrived.other' }, { ids: ids.join(', ') }),
-        'output-note',
+  /** What arrived, in one sentence: the first thing both flows say. */
+  const arrived = (sources: readonly WarpSource[]): HTMLElement =>
+    paragraph(
+      plural(
+        sources.length,
+        { one: 'outputs.warp.arrived.one', other: 'outputs.warp.arrived.other' },
+        { ids: sources.map(s => s.id).join(', ') },
       ),
-      paragraph(t('outputs.warp.askQuadrants'), 'output-note'),
-      quadrantDiagram(ids),
-      paragraph(t('outputs.warp.quadrantsKey'), 'output-note'),
-    ]
-    for (const source of sources) {
-      const stretch = rasterStretchPercent(source.mesh.aspect, QUADRANT, monitor.size)
-      if (stretch === null) continue
-      parts.push(
+      'output-note',
+    )
+
+  /**
+   * A warning for each mesh whose raster is not the shape of the part of
+   * this display it would fill — shown before the choice, since the
+   * operator may know the lens compensates.
+   */
+  const stretchWarnings = (sources: readonly WarpSource[], viewportOf: (id: string) => Viewport | undefined): HTMLElement[] =>
+    sources.flatMap(source => {
+      const viewport = viewportOf(source.id)
+      if (viewport === undefined) return []
+      const stretch = rasterStretchPercent(source.mesh.aspect, viewport, monitor.size)
+      if (stretch === null) return []
+      const shape = (viewport.w * monitor.size.width) / (viewport.h * monitor.size.height)
+      return [
         paragraph(
           t('outputs.warp.aspectMismatch', {
             id: source.id,
             mesh: source.mesh.aspect.toFixed(3),
-            viewport: ((QUADRANT.w * monitor.size.width) / (QUADRANT.h * monitor.size.height)).toFixed(3),
+            viewport: shape.toFixed(3),
             percent: stretch,
           }),
           'output-warning',
         ),
-      )
-    }
-    const choose = button(t('outputs.warp.useQuadrants'), 'output-warp-choose')
+      ]
+    })
+
+  /**
+   * The two buttons that end either flow. The confirm button imports by
+   * `placement`; Cancel clears the question and imports nothing.
+   */
+  const decision = (sources: readonly WarpSource[], placement: WarpPlacement, confirmLabel: string): HTMLElement => {
+    const choose = button(confirmLabel, 'output-warp-choose')
     const cancel = button(t('outputs.warp.cancel'), 'output-warp-cancel')
     cancel.addEventListener('click', () => show())
     choose.addEventListener('click', () => {
       choose.disabled = true
       cancel.disabled = true
       void mgr
-        .importWarpSet(record.label, sources, 'sos-quadrants')
+        .importWarpSet(record.label, sources, placement)
         .then(result => {
           if (!result.ok) {
             show(paragraph(describeWarpRefusal(result.refusal), 'output-error'))
@@ -314,7 +413,11 @@ export function buildWarpSection(
           // repaint replaces this whole section, region included, and a
           // region swapped out with its content announces nothing.
           announcePolite(
-            plural(sources.length, { one: 'outputs.warp.loaded.one', other: 'outputs.warp.loaded.other' }, { ids: ids.join(', ') }),
+            plural(
+              sources.length,
+              { one: 'outputs.warp.loaded.one', other: 'outputs.warp.loaded.other' },
+              { ids: sources.map(s => s.id).join(', ') },
+            ),
           )
           repaint()
         })
@@ -327,7 +430,62 @@ export function buildWarpSection(
     const row = document.createElement('div')
     row.className = 'output-warp-actions'
     row.append(choose, cancel)
-    parts.push(row)
+    return row
+  }
+
+  /** No layout to read: what arrived, where SOS's quadrants would put it, and the question. */
+  const askQuadrants = (sources: readonly WarpSource[]): HTMLElement[] => {
+    const ids = sources.map(s => s.id)
+    return [
+      arrived(sources),
+      paragraph(t('outputs.warp.askQuadrants'), 'output-note'),
+      layoutDiagram(
+        SOS_QUADRANTS.map(q => ({ ...q, filled: ids.includes(q.id) })),
+        monitor.size,
+      ),
+      paragraph(t('outputs.warp.quadrantsKey'), 'output-note'),
+      ...stretchWarnings(sources, id => SOS_QUADRANTS.find(q => q.id === id)?.viewport),
+      decision(sources, 'sos-quadrants', t('outputs.warp.useQuadrants')),
+    ]
+  }
+
+  /**
+   * The bundle says where its meshes go: draw that, say what it baked in,
+   * compare the display it was solved for with this one, and import on
+   * one click. There is no question to ask — only a chance to see the
+   * layout before the projectors change.
+   */
+  const confirmBundleLayout = (sources: readonly WarpSource[], layout: BundleLayout): HTMLElement[] => {
+    const viewportOf = (id: string): Viewport | undefined => layout.projectors.find(p => p.id === id)?.viewport
+    const parts: HTMLElement[] = [
+      arrived(sources),
+      paragraph(t('outputs.warp.bundlePlaces'), 'output-note'),
+      layoutDiagram(
+        layout.projectors.map(p => ({ id: p.id, viewport: p.viewport, filled: true })),
+        monitor.size,
+      ),
+      layoutAsText(layout),
+      paragraph(
+        layout.texture.surface === 'sphere'
+          ? t('outputs.warp.bakedRotationSphere', {
+              degrees: formatNumber(layout.texture.rotationOffsetDeg, { maximumFractionDigits: 2 }),
+            })
+          : t('outputs.warp.bakedRotationMesh'),
+        'output-note',
+      ),
+    ]
+    const solved = layout.framebuffer
+    const here = monitor.size
+    if (solved.width !== here.width || solved.height !== here.height) {
+      const sameShape = Math.abs((solved.width / solved.height) / (here.width / here.height) - 1) < SAME_SHAPE
+      const params = { solvedWidth: solved.width, solvedHeight: solved.height, width: here.width, height: here.height }
+      parts.push(
+        sameShape
+          ? paragraph(t('outputs.warp.framebufferResampled', params), 'output-note')
+          : paragraph(t('outputs.warp.framebufferStretched', params), 'output-warning'),
+      )
+    }
+    parts.push(...stretchWarnings(sources, viewportOf), decision(sources, layout, t('outputs.warp.useBundleLayout')))
     return parts
   }
 
