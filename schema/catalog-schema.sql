@@ -457,6 +457,36 @@ CREATE TABLE publishers (
   created_at      TEXT NOT NULL
 );
 
+CREATE TABLE stac_history_items (
+  id TEXT PRIMARY KEY,
+  publication_id TEXT NOT NULL REFERENCES stac_history_publications(id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  data_ref TEXT NOT NULL,
+  content_digest TEXT NOT NULL,
+  format TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  UNIQUE (publication_id, ordinal)
+);
+
+CREATE TABLE stac_history_publications (
+  id TEXT PRIMARY KEY,
+  dataset_id TEXT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('frame', 'revision')),
+  source_key TEXT NOT NULL,
+  model_json TEXT NOT NULL CHECK (json_valid(model_json)),
+  captured_at TEXT NOT NULL,
+  UNIQUE (dataset_id, kind, source_key)
+);
+
+CREATE TABLE stac_source_lineage (
+  publication_id TEXT PRIMARY KEY REFERENCES stac_history_publications(id) ON DELETE CASCADE,
+  sources_json TEXT NOT NULL CHECK (json_valid(sources_json) AND json_type(sources_json) = 'array'
+    AND json_array_length(sources_json) BETWEEN 1 AND 32),
+  recorded_by TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+);
+
 CREATE TABLE tour_dataset_refs (
   tour_id    TEXT NOT NULL,
   dataset_id TEXT NOT NULL,
@@ -615,3 +645,5 @@ CREATE INDEX idx_video_index_source ON video_index (source_id);
 CREATE INDEX idx_workflow_runs_active ON workflow_runs (workflow_id, status);
 CREATE INDEX idx_workflow_runs_workflow ON workflow_runs (workflow_id, created_at DESC);
 CREATE INDEX idx_workflows_due ON workflows (enabled, next_run_at);
+CREATE INDEX stac_history_items_publication ON stac_history_items(publication_id, ordinal);
+CREATE INDEX stac_history_publications_dataset ON stac_history_publications(dataset_id, captured_at, id);
