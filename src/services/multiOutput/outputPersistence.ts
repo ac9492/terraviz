@@ -39,6 +39,7 @@ import { logger } from '../../utils/logger'
 import {
   DEFAULT_FRAMEBUFFER_WIDTH,
   FRAMEBUFFER_WIDTHS,
+  isOutputMode,
   type OutputMode,
   type OutputRenderConfig,
 } from './protocol'
@@ -251,7 +252,13 @@ function parseOutput(entry: unknown): PersistedOutput | null {
   // NaN origin compares unequal to itself, so it would silently never
   // match any monitor.
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null
-  if (mode !== 'sos-equirect') return null
+  // A mode this build does not render drops the entry rather than
+  // coming back as one it does. That refusal is why `projector-warp` is
+  // a mode and not a render-config flag: a build without rung 16
+  // declines to spawn a warped output instead of restoring it as
+  // `sos-equirect` and throwing an unwarped picture across projectors
+  // calibrated for a warp — which would look as though it had worked.
+  if (!isOutputMode(mode)) return null
   return {
     label,
     monitorName,

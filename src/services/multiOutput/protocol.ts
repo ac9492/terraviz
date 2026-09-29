@@ -88,9 +88,73 @@ export function isOutputLabel(label: string): boolean {
 
 // --- Mirrored globe state ---
 
-/** Output projection mode. v1 ships one; the field exists so the wire
- *  format does not change when fisheye / mirrored modes land. */
-export type OutputMode = 'sos-equirect'
+/**
+ * Every projection geometry an output can be, and the one list a new
+ * mode is registered in — the type is derived from it, so a mode cannot
+ * be added to one and forgotten in the other.
+ *
+ * - `sos-equirect` — v1's 2:1 unwrap, for an LED sphere, a dome, or
+ *   anything else that takes an equirectangular frame. A persisted
+ *   string, so it keeps its name though an SOS projector rig is now
+ *   `projector-warp`'s: renaming it would reset every operator's saved
+ *   outputs to buy nothing.
+ * - `projector-warp` — a projector rig's warp meshes, each in its
+ *   viewport of one spanned framebuffer (rung 16). Named for what it
+ *   does rather than for SOS, whose four quadrants are one rig among the
+ *   several sphere-sim calibrates.
+ */
+export const OUTPUT_MODES = ['sos-equirect', 'projector-warp'] as const
+
+/** Output projection mode. */
+export type OutputMode = (typeof OUTPUT_MODES)[number]
+
+/**
+ * The mode a window whose URL names none renders — every window a build
+ * before rung 16 spawned, and every `sos-equirect` one since, because
+ * `outputModeQuery` spawns that mode bare.
+ */
+export const DEFAULT_OUTPUT_MODE: OutputMode = 'sos-equirect'
+
+/**
+ * Narrow a value read from outside — a stored config, a URL — to a mode
+ * this build renders. Anything else is `false`, never a guess: a mode
+ * this build does not know must not come back as one it does, least of
+ * all as `sos-equirect`, which thrown across calibrated projectors is an
+ * unwarped picture worse than black.
+ */
+export function isOutputMode(value: unknown): value is OutputMode {
+  return (OUTPUT_MODES as readonly unknown[]).includes(value)
+}
+
+/** The query parameter an output's entry URL carries its mode in. */
+export const OUTPUT_MODE_PARAM = 'mode'
+
+/**
+ * The query an output window is spawned with, which is how it learns its
+ * geometry — **and the only way**. A window must know its mode before it
+ * hears anything, or the check that a `view` arm matches it would be
+ * vacuous (see `acceptView` in `outputLink`), and the URL is the one
+ * carrier that exists before any IPC does.
+ *
+ * `sos-equirect` spawns with no query at all, exactly as every window
+ * before rung 16 did, so the bare URL keeps meaning what it always
+ * meant. Grammar, like `outputLabel`, and beside it for the same reason:
+ * the manager writes it and the output reads it, and the two must agree.
+ */
+export function outputModeQuery(mode: OutputMode): string {
+  return mode === DEFAULT_OUTPUT_MODE ? '' : `?${OUTPUT_MODE_PARAM}=${mode}`
+}
+
+/**
+ * The mode an output's own URL names: `sos-equirect` when it names none,
+ * or `null` when it names one this build does not know, or names more
+ * than one. `null` is the output's cue to draw nothing and say so.
+ */
+export function outputModeFromQuery(search: string): OutputMode | null {
+  const named = new URLSearchParams(search).getAll(OUTPUT_MODE_PARAM)
+  if (named.length === 0) return DEFAULT_OUTPUT_MODE
+  return named.length === 1 && isOutputMode(named[0]) ? named[0] : null
+}
 
 /** What the control window's primary panel currently has loaded. */
 export interface MirroredDataset {
@@ -300,6 +364,29 @@ export interface MirroredEquirectView extends MirroredViewCommon {
 }
 
 /**
+ * The `projector-warp` arm (rung 16): a projector rig's warp meshes over
+ * the same ray-march.
+ *
+ * **The same parameters as `sos-equirect`'s, `split` included.** A warp
+ * changes how an arm becomes pixels, not what it holds: the fragment
+ * recovers `(u, v)` from the direction the mesh interpolates, and
+ * everything after that line is the equirect shader — the camera offset
+ * that is operator zoom, SOS's split fold, the rotation. One thing reads
+ * differently: a sphere rig's mechanical rotation is already baked into
+ * the mesh, so here `rotationOffsetRad` is a **content** rotation, a
+ * turn of the picture on top of whatever the warp maps (plan §"Three
+ * conventions that fail silently", 3). The value and the uniform are the
+ * same; the panel's label is not.
+ *
+ * A separate arm rather than a flag on the first, because the mode is
+ * what a window is spawned as and what it checks every view against.
+ */
+export interface MirroredWarpView extends MirroredViewCommon {
+  mode: 'projector-warp'
+  params: MirroredEquirectParams
+}
+
+/**
  * How **one output** should project the globe, discriminated on its
  * mode. Produced by `projectView` at the send boundary; never stored.
  *
@@ -321,13 +408,15 @@ export interface MirroredEquirectView extends MirroredViewCommon {
  * Each arm's payload is `params`, uniformly, because that is what the
  * arm's renderer takes: `sos-equirect`'s is `equirectRtt`'s own
  * `EquirectParams`, which is what `outputScene.setParams` already
- * accepts. A second mode adds an arm whose `params` is *its* renderer's
- * object; nothing else in the union changes.
+ * accepts, and `projector-warp`'s is the same object because the same
+ * ray-march runs behind the warp. A mode with a different renderer adds
+ * an arm whose `params` is *its* renderer's object; nothing else in the
+ * union changes.
  *
  * The two proofs below tie the union to `OutputMode` in both
  * directions, so neither list can gain a member without the other.
  */
-export type MirroredView = MirroredEquirectView
+export type MirroredView = MirroredEquirectView | MirroredWarpView
 
 /**
  * Compile-time proof that `OutputMode` and the union agree.
@@ -452,7 +541,9 @@ export type OutputGlobeState = GlobeState<MirroredView>
  * not equirectangular. That is a property of *this projection*, not of
  * outputs in general — a second `OutputMode` brings its own ladder
  * rather than widening this one (plan §"Geometry is a per-output
- * configuration").
+ * configuration"). `projector-warp` brings none at all: a projector's
+ * raster is whatever shape the spanned display is, so that window sizes
+ * its buffer from itself and never reads this (rung 16).
  */
 export const FRAMEBUFFER_WIDTHS = [1024, 2048, 4096, 8192] as const
 

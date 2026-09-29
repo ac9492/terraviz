@@ -48,6 +48,7 @@
  */
 
 import {
+  type MirroredEquirectParams,
   type MirroredGlobeState,
   type MirroredView,
   type OperatorCamera,
@@ -56,8 +57,9 @@ import {
   type SharedStateMessage,
   type SharedView,
 } from './protocol'
-// The one import that crosses from the control side into `src/output/`,
-// and it is deliberate. `equirectRtt` is pure TS by construction — no
+// One of two imports that cross from the control side into
+// `src/output/` — the other is `warpImport`'s, for the warp parser a set
+// is re-read by everywhere — and it is deliberate. `equirectRtt` is pure TS by construction — no
 // Three, no GL, no DOM — precisely so the projection maths is testable
 // without a context, which also makes it importable from here. The
 // alternative is extracting `cameraOffsetForCamera` and the
@@ -131,7 +133,9 @@ export function initialState(): MirroredGlobeState {
  * it is a storage-schema change, and rung 10's version field resets a
  * mismatched blob rather than migrating it. Trading every operator's
  * saved outputs for the tidier home of one boolean is the wrong side
- * of that deal until a second mode actually needs it.
+ * of that deal until a second mode actually needs it — and the second
+ * mode did not: `projector-warp` runs the same ray-march behind its
+ * meshes, so it takes every field here, `split` included.
  */
 export interface OutputViewSettings {
   /** When false, this output gets `CENTRED_CAMERA` regardless of where
@@ -184,11 +188,13 @@ export const DEFAULT_VIEW_SETTINGS: OutputViewSettings = {
  * deciding whether it is shared or per-output — and the wrong answer
  * there is invisible, because it looks like the setting simply working.
  *
- * The `switch` has one arm today. It is a `switch` rather than an `if`
- * because that is where a second mode's derivation goes, and because
- * the exhaustiveness check below turns "you added a mode and forgot to
- * project it" into a compile error rather than a projection that
- * returns the wrong geometry.
+ * `projector-warp`'s arm carries exactly `sos-equirect`'s parameters,
+ * because the same ray-march runs behind the warp — so both are built
+ * by `rayMarchParams` and differ only in the discriminant. It is still
+ * two cases rather than one shared one, so that a mode added later has
+ * to take a side, and the exhaustiveness check below turns "you added a
+ * mode and forgot to project it" into a compile error rather than a
+ * projection that returns the wrong geometry.
  */
 export function projectView(
   shared: SharedView,
@@ -197,33 +203,39 @@ export function projectView(
 ): MirroredView {
   switch (mode) {
     case 'sos-equirect':
-      return {
-        mode: 'sos-equirect',
-        dayNight: shared.dayNight,
-        params: {
-          // Derived here, once per output, from the one shared camera —
-          // rather than derived once and stored, which would be a
-          // second copy of the same fact, or derived by each output,
-          // which would be N copies of the same code.
-          cameraOffset: settings.trackCamera
-            ? cameraOffsetForCamera(shared.camera.lat, shared.camera.lon, shared.camera.zoom)
-            : { ...CENTRED_CAMERA },
-          split: settings.split,
-          // The one place degrees become radians. A non-finite stored
-          // value resolves to no rotation rather than reaching the
-          // shader as a NaN longitude, which would make every ray miss
-          // — the same guard `operatorCameraFrom` applies to a camera
-          // MapLibre reported as NaN.
-          rotationOffsetRad: Number.isFinite(settings.rotationOffsetDeg)
-            ? (settings.rotationOffsetDeg * Math.PI) / 180
-            : 0,
-        },
-      }
+      return { mode: 'sos-equirect', dayNight: shared.dayNight, params: rayMarchParams(shared, settings) }
+    case 'projector-warp':
+      return { mode: 'projector-warp', dayNight: shared.dayNight, params: rayMarchParams(shared, settings) }
     default:
       // `mode` narrows to `never` here while every `OutputMode` has a
       // case above. Adding one without a case makes this assignment
       // fail, which is the whole point of the annotation.
       return assertUnreachableMode(mode)
+  }
+}
+
+/**
+ * The ray-march's parameters for one output, built field by field — the
+ * body both arms of `projectView` share, since a warp only changes how
+ * the ray-march's answer reaches the glass.
+ */
+function rayMarchParams(shared: SharedView, settings: OutputViewSettings): MirroredEquirectParams {
+  return {
+    // Derived here, once per output, from the one shared camera —
+    // rather than derived once and stored, which would be a second copy
+    // of the same fact, or derived by each output, which would be N
+    // copies of the same code.
+    cameraOffset: settings.trackCamera
+      ? cameraOffsetForCamera(shared.camera.lat, shared.camera.lon, shared.camera.zoom)
+      : { ...CENTRED_CAMERA },
+    split: settings.split,
+    // The one place degrees become radians. A non-finite stored value
+    // resolves to no rotation rather than reaching the shader as a NaN
+    // longitude, which would make every ray miss — the same guard
+    // `operatorCameraFrom` applies to a camera MapLibre reported as NaN.
+    rotationOffsetRad: Number.isFinite(settings.rotationOffsetDeg)
+      ? (settings.rotationOffsetDeg * Math.PI) / 180
+      : 0,
   }
 }
 

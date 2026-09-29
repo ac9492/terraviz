@@ -35,7 +35,7 @@ import { until } from '../test-utils'
 import { DECORATION_UNIFORMS } from './layerStack'
 import { NADIR_LUT_SIZE } from './atmosphereNadir'
 
-import { DEFAULT_FRAMEBUFFER_WIDTH } from '../services/multiOutput/protocol'
+import { DEFAULT_FRAMEBUFFER_WIDTH, type OutputMode } from '../services/multiOutput/protocol'
 
 /** A 60 Hz display's callback interval, the ordinary case. */
 const AT_60_HZ = 1000 / 60
@@ -280,6 +280,8 @@ describe('the sphere texture binding', () => {
      *  asked the renderer for — including the third argument, which is
      *  what keeps the CSS size alone. */
     const sized: Array<[number, number, boolean | undefined]> = []
+    /** What was put in the scene — the quad, so a test can ask whether it draws. */
+    const added: unknown[] = []
     const THREE_ = {
       WebGLRenderer: class {
         /** Captured so `forceContextLoss` can fire on it, below. */
@@ -309,7 +311,7 @@ describe('the sphere texture binding', () => {
           this.canvas.dispatchEvent?.('webglcontextlost')
         }
       },
-      Scene: class { add(): void {} },
+      Scene: class { add(object: unknown): void { added.push(object) } },
       OrthographicCamera: class {},
       Vector3: class {
         constructor(public x = 0, public y = 0, public z = 0) {}
@@ -374,7 +376,7 @@ describe('the sphere texture binding', () => {
         ) {}
       },
     }
-    return { THREE_: THREE_ as never, uniformsSeen, shadersSeen, disposed, sized }
+    return { THREE_: THREE_ as never, uniformsSeen, shadersSeen, disposed, sized, added }
   }
 
   function fakeEarth(base: FakeTexture, upgrade?: FakeTexture) {
@@ -454,6 +456,22 @@ describe('the sphere texture binding', () => {
   }
 
   const canvas = () => fakeCanvas().el
+
+  it('draws the unwarped frame for sos-equirect, and nothing into a warp window\'s projectors', async () => {
+    const visibleFor = async (mode?: OutputMode): Promise<unknown> => {
+      const three = fakeThree()
+      await createOutputScene(
+        { canvas: canvas(), mode },
+        { loadThree: async () => three.THREE_, createEarth: fakeEarth({ id: 'base' }).createEarth },
+      )
+      return (three.added[0] as { visible?: boolean }).visible
+    }
+    expect(await visibleFor()).toBe(true)
+    expect(await visibleFor('sos-equirect')).toBe(true)
+    // No warp set is held, so the quad — the unwarped frame — would be
+    // thrown across projectors calibrated for a warp. Black instead.
+    expect(await visibleFor('projector-warp')).toBe(false)
+  })
 
   it('binds a real texture from the first frame, never null', async () => {
     const three = fakeThree()

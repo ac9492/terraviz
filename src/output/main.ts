@@ -52,7 +52,11 @@ import {
 import type { LinkHealth } from './linkWatchdog'
 import type { SyncOutcome } from './outputSync'
 import { createFullscreenController, resolveChromeHost } from '../services/windowChrome'
-import type { OutputGlobeState, OutputRenderConfig } from '../services/multiOutput/protocol'
+import {
+  outputModeFromQuery,
+  type OutputGlobeState,
+  type OutputRenderConfig,
+} from '../services/multiOutput/protocol'
 import { logger } from '../utils/logger'
 
 /** The same gate `bootMultiOutput` applies on the control side. */
@@ -70,7 +74,19 @@ async function boot(): Promise<void> {
     return
   }
 
-  const scene = await createOutputScene({ canvas })
+  // The geometry comes from this window's own URL, which the manager
+  // wrote before any IPC existed — never from the first view that
+  // arrives, or the check that a view is meant for this window would be
+  // vacuous. A mode this build does not know draws nothing rather than
+  // falling back to `sos-equirect`: an unwarped picture thrown across
+  // projectors calibrated for a warp is worse than black.
+  const mode = outputModeFromQuery(window.location.search)
+  if (mode === null) {
+    logger.error(`[Output] this window's URL names a mode this build does not render: ${window.location.search}`)
+    return
+  }
+
+  const scene = await createOutputScene({ canvas, mode })
   const mirror = createDatasetMirror()
   /** Per-frame work the link installs, if it attached. Empty on the web
    *  fixture page, where the loop is just the idle Earth. */
@@ -225,7 +241,7 @@ async function boot(): Promise<void> {
     createFullscreenController({ host: resolveChromeHost(), initial: true })
 
     try {
-      const link = await connectOutputLink(await createTauriLinkHost())
+      const link = await connectOutputLink(await createTauriLinkHost(), mode)
       readLinkHealth = () => link.linkHealth()
       readCalibration = () => link.renderConfig().calibration
 

@@ -61,6 +61,7 @@ import {
   OUTPUT_REATTACH_EVENT,
   OUTPUT_RENDER_CONFIG_EVENT,
   OUTPUT_STATE_EVENT,
+  DEFAULT_OUTPUT_MODE,
   defaultRenderConfig,
   type OutputGlobeState,
   type OutputMode,
@@ -70,21 +71,15 @@ import {
 import { createLinkWatchdog, type LinkHealth, type LinkWatchdog } from './linkWatchdog'
 import { logger } from '../utils/logger'
 
-/**
- * The geometry this window renders.
- *
- * A constant because v1 ships one mode, and it is deliberately *not*
- * read from the first `view.mode` that arrives: an output that adopted
- * the mode it was sent could never disagree with it, which would make
- * the check below vacuous. The mode has to be known independently for
- * the comparison to mean anything.
- *
- * When a second mode lands, the manager tells the window which it is —
- * the entry URL it is spawned with is the obvious carrier, since
- * `spawn()` already passes one and the output reads it before any IPC
- * exists.
- */
-export const OUTPUT_MODE: OutputMode = 'sos-equirect'
+// The geometry this window renders is an **argument**, never something
+// read off the wire. It arrives from the window's own URL
+// (`outputModeFromQuery`, read by `src/output/main.ts`), which the
+// manager wrote before any IPC existed. It is deliberately *not* adopted
+// from the first `view.mode` that arrives: an output that took its
+// geometry from the messages it was sent could never disagree with them,
+// which would make `acceptView`'s check vacuous. The mode has to be
+// known independently for the comparison to mean anything. The functions
+// below default to `DEFAULT_OUTPUT_MODE`, which is what a bare URL means.
 
 /** Top-level keys of the mirrored state. */
 export type StateKey = keyof OutputGlobeState
@@ -159,7 +154,7 @@ export interface OutputStateStore {
  * call site: no adapter, and no second place for the centred-camera
  * identity to be written down.
  */
-export function outputInitialState(mode: OutputMode = OUTPUT_MODE): OutputGlobeState {
+export function outputInitialState(mode: OutputMode = DEFAULT_OUTPUT_MODE): OutputGlobeState {
   return {
     dataset: null,
     primary: null,
@@ -266,7 +261,7 @@ export function changesPicture(changed: readonly StateKey[]): boolean {
   return changed.some(key => picture.includes(key))
 }
 
-export function createOutputStateStore(mode: OutputMode = OUTPUT_MODE): OutputStateStore {
+export function createOutputStateStore(mode: OutputMode = DEFAULT_OUTPUT_MODE): OutputStateStore {
   let held = outputInitialState(mode)
   let seq = -1
 
@@ -441,7 +436,7 @@ export interface OutputLink {
  */
 export async function connectOutputLink(
   host: OutputLinkHost,
-  mode: OutputMode = OUTPUT_MODE,
+  mode: OutputMode = DEFAULT_OUTPUT_MODE,
 ): Promise<OutputLink> {
   const store = createOutputStateStore(mode)
   const listeners = new Set<(changed: StateKey[], state: Readonly<OutputGlobeState>) => void>()

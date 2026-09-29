@@ -329,6 +329,23 @@ describe('per-output view projection', () => {
     expect(projected.view!.mode).toBe('sos-equirect')
   })
 
+  it('gives a projector-warp output the ray-march it runs behind its meshes', () => {
+    // Same parameters, split and rotation included — a warp changes how
+    // the arm reaches the glass, not what it holds — under its own
+    // discriminant, so the window can still check the arm is meant for it.
+    const settings = { trackCamera: true, split: true, rotationOffsetDeg: 90 }
+    const equirect = projectView(shared, settings, 'sos-equirect')
+    const warp = projectView(shared, settings, 'projector-warp')
+    expect(warp.mode).toBe('projector-warp')
+    expect(warp.params).toEqual(equirect.params)
+    expect(warp.params.rotationOffsetRad).toBeCloseTo(Math.PI / 2, 12)
+    expect(warp.dayNight).toBe(false)
+    expect(projectView(shared, { ...settings, trackCamera: false }, 'projector-warp').params.cameraOffset).toEqual(
+      CENTRED_CAMERA,
+    )
+    expect(projectState({ view: shared }, settings, 'projector-warp').view!.mode).toBe('projector-warp')
+  })
+
   it('derives the default camera to a centred, uniform unwrap', () => {
     // The behavioural continuity the split has to preserve. Before it,
     // `initialState` stored `CENTRED_CAMERA` literally; now it stores

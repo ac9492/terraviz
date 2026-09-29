@@ -14,7 +14,6 @@
 import { describe, it, expect, vi } from 'vitest'
 
 import {
-  OUTPUT_MODE,
   PICTURE_KEYS,
   PLAYHEAD_KEYS,
   connectOutputLink,
@@ -27,7 +26,7 @@ import {
   type OutputLinkHost,
   type StateKey,
 } from './outputLink'
-import { IPC_ORPHAN_MS, IPC_STALE_MS } from '../services/multiOutput/protocol'
+import { DEFAULT_OUTPUT_MODE, IPC_ORPHAN_MS, IPC_STALE_MS } from '../services/multiOutput/protocol'
 import { IDENTITY_PARAMS } from './equirectRtt'
 import {
   OUTPUT_EVENT,
@@ -216,10 +215,29 @@ describe('the store: the mode check', () => {
     errors.mockRestore()
   })
 
+  it('tells the two real geometries apart, whichever this window is', () => {
+    // Both arms carry the same parameters, so only the discriminant can
+    // say a view was meant for a window of the other kind.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const params = { cameraOffset: { x: 0.25, y: 0, z: 0 }, split: false, rotationOffsetRad: 0 }
+    const warpWindow = createOutputStateStore('projector-warp')
+    expect(warpWindow.state().view.mode).toBe('projector-warp')
+    expect(warpWindow.accept(diff(1, { view: { mode: 'sos-equirect', dayNight: true, params } })).changed).toEqual([])
+    expect(warpWindow.accept(diff(2, { view: { mode: 'projector-warp', dayNight: true, params } })).changed).toEqual([
+      'view',
+    ])
+    const equirectWindow = createOutputStateStore('sos-equirect')
+    expect(
+      equirectWindow.accept(diff(1, { view: { mode: 'projector-warp', dayNight: true, params } })).changed,
+    ).toEqual([])
+    expect(errors).toHaveBeenCalledTimes(2)
+    errors.mockRestore()
+  })
+
   it('applies a view for its own geometry', () => {
     const store = createOutputStateStore()
     const view = {
-      mode: OUTPUT_MODE,
+      mode: DEFAULT_OUTPUT_MODE,
       dayNight: false,
       params: { cameraOffset: { x: 0.5, y: 0, z: 0 }, split: true, rotationOffsetRad: 0 },
     }
@@ -376,8 +394,16 @@ describe('connectOutputLink', () => {
       type: 'output_ready',
       label: 'output-3',
       monitorName: '\\\\.\\DISPLAY2',
-      mode: OUTPUT_MODE,
+      mode: DEFAULT_OUTPUT_MODE,
     })
+  })
+
+  it('announces the mode it was given, never one it read off the wire', async () => {
+    const host = fakeHost()
+
+    await connectOutputLink(host, 'projector-warp')
+
+    expect(host.emit).toHaveBeenCalledWith(OUTPUT_EVENT, expect.objectContaining({ type: 'output_ready', mode: 'projector-warp' }))
   })
 
   it('listens on the channel the manager targets', async () => {

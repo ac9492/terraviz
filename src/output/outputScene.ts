@@ -89,7 +89,12 @@ import {
 // offers it and this module snaps to it, and the panel cannot import
 // the output bundle. Re-exported so the scene's own callers do not have
 // to know that.
-import { FRAMEBUFFER_WIDTHS, type FramebufferWidth } from '../services/multiOutput/protocol'
+import {
+  DEFAULT_OUTPUT_MODE,
+  FRAMEBUFFER_WIDTHS,
+  type FramebufferWidth,
+  type OutputMode,
+} from '../services/multiOutput/protocol'
 export { FRAMEBUFFER_WIDTHS, type FramebufferWidth }
 import { COLOR_SCALE_LUT_SIZE, buildColorScaleLut } from '../types/color-scale'
 import { buildDisplayLut, type ColorScaleDisplay } from '../services/colorScaleDisplay'
@@ -293,6 +298,13 @@ export interface OutputSceneOptions {
   /** Target framebuffer width; snapped by `resolveFramebufferSize`. */
   framebufferWidth?: number
   params?: EquirectParams
+  /**
+   * The geometry this window was spawned as, read from its URL. Absent
+   * is `sos-equirect`. A `projector-warp` window draws nothing until it
+   * holds a warp set (rung 16): an unwarped equirect thrown across
+   * projectors calibrated for a warp is worse than black.
+   */
+  mode?: OutputMode
 }
 
 /**
@@ -843,6 +855,11 @@ export async function createOutputScene(
   // The quad covers clip space regardless of the camera; frustum
   // culling would test its (unused) world bounds and can cull it.
   quad.frustumCulled = false
+  // A `projector-warp` window holds no warp set yet, so the quad — the
+  // unwarped frame — is never drawn into its projector rasters. The
+  // renderer still clears to black every frame, which keeps the loop,
+  // the HUD and the 1 Hz floor honest about a window that is running.
+  quad.visible = (options.mode ?? DEFAULT_OUTPUT_MODE) === 'sos-equirect'
   scene.add(quad)
 
   // The CDN loader upgrades 2K → 4K → 8K after first paint. Swap the

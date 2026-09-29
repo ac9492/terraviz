@@ -31,6 +31,7 @@ import {
   OUTPUT_RENDER_CONFIG_EVENT,
   OUTPUT_STATE_EVENT,
   type OutputEvent,
+  type OutputMode,
   type OutputRenderConfig,
   type OutputStateMessage,
 } from './protocol'
@@ -296,11 +297,11 @@ function makeManager(host: MultiOutputHost, deps: MultiOutputDeps = {}): MultiOu
   })
 }
 
-const ready = (label: string): OutputEvent => ({
+const ready = (label: string, mode: OutputMode = 'sos-equirect'): OutputEvent => ({
   type: 'output_ready',
   label,
   monitorName: null,
-  mode: 'sos-equirect',
+  mode,
 })
 
 describe('spawn sequence', () => {
@@ -317,6 +318,16 @@ describe('spawn sequence', () => {
       'setFullscreen:output-1:true',
       'show:output-1',
     ])
+  })
+
+  it('spawns a projector-warp output with its mode on the URL, the one thing it can read before IPC', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+
+    await manager.addOutput({ monitorIndex: 0, mode: 'projector-warp' })
+
+    expect(fake.calls[0]).toBe(`create:output-1:${OUTPUT_ENTRY_URL}?mode=projector-warp`)
+    expect(manager.outputs()[0].mode).toBe('projector-warp')
   })
 
   it('passes a signed origin through unchanged', async () => {
@@ -529,6 +540,35 @@ describe('broadcast', () => {
     expect(states[0].payload.state).toMatchObject({
       simulationDate: '2026-01-01T00:00:00Z',
     })
+  })
+
+  it('projects the snapshot into a projector-warp output\'s own arm', async () => {
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0, mode: 'projector-warp' })
+
+    fake.send(ready('output-1', 'projector-warp'))
+
+    const states = stateEmits(fake.emitted)
+    expect((states[0].payload.state as { view: { mode: string } }).view.mode).toBe('projector-warp')
+  })
+
+  it('serves a window that announces the wrong geometry, and says so', async () => {
+    // The output drops a view that is not its own and keeps the rest, so
+    // serving it costs nothing — but the two ends of one build disagreeing
+    // about what a URL says would otherwise surface nowhere.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0, mode: 'projector-warp' })
+
+    fake.send(ready('output-1'))
+
+    expect(stateEmits(fake.emitted)).toHaveLength(1)
+    expect(errors.mock.calls.flat().join(' ')).toMatch(/announced 'sos-equirect' but was spawned as 'projector-warp'/)
+    errors.mockRestore()
   })
 
   it('sends the render config before the first state, not after', async () => {

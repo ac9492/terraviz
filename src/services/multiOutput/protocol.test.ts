@@ -12,7 +12,12 @@
 
 import { describe, it, expect } from 'vitest'
 import {
+  DEFAULT_OUTPUT_MODE,
   OUTPUT_LABEL_PREFIX,
+  OUTPUT_MODES,
+  isOutputMode,
+  outputModeFromQuery,
+  outputModeQuery,
   outputLabel,
   outputLabelIndex,
   isOutputLabel,
@@ -67,6 +72,36 @@ describe('window labels', () => {
   it('does not match a label that merely contains the prefix', () => {
     expect(isOutputLabel('spike-output-1')).toBe(false)
     expect(isOutputLabel('outputs')).toBe(false)
+  })
+})
+
+describe('output modes and the entry URL', () => {
+  it('knows exactly the modes it renders, and nothing that looks like one', () => {
+    expect([...OUTPUT_MODES]).toEqual(['sos-equirect', 'projector-warp'])
+    for (const mode of OUTPUT_MODES) expect(isOutputMode(mode)).toBe(true)
+    for (const other of ['fisheye', 'SOS-EQUIRECT', 'sos-equirect ', '', null, undefined, 0]) {
+      expect(isOutputMode(other)).toBe(false)
+    }
+  })
+
+  it('spawns sos-equirect bare, as every window before rung 16 was', () => {
+    expect(DEFAULT_OUTPUT_MODE).toBe('sos-equirect')
+    expect(outputModeQuery('sos-equirect')).toBe('')
+    expect(outputModeQuery('projector-warp')).toBe('?mode=projector-warp')
+  })
+
+  it('reads back every mode it writes', () => {
+    for (const mode of OUTPUT_MODES) expect(outputModeFromQuery(outputModeQuery(mode))).toBe(mode)
+    expect(outputModeFromQuery('?mode=sos-equirect')).toBe('sos-equirect')
+    expect(outputModeFromQuery('?other=1&mode=projector-warp')).toBe('projector-warp')
+  })
+
+  it('never turns a mode it does not know into one it does', () => {
+    // Least of all into sos-equirect: an unwarped picture across
+    // projectors calibrated for a warp is worse than black.
+    expect(outputModeFromQuery('?mode=fisheye')).toBeNull()
+    expect(outputModeFromQuery('?mode=')).toBeNull()
+    expect(outputModeFromQuery('?mode=projector-warp&mode=sos-equirect')).toBeNull()
   })
 })
 

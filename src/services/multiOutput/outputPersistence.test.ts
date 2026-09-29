@@ -145,6 +145,21 @@ describe('parseOutputConfig', () => {
     expect(parseOutputConfig(JSON.stringify(config))).toEqual(config)
   })
 
+  it('restores a projector-warp output as one, and drops a mode this build does not render', () => {
+    const raw = JSON.stringify({
+      version: OUTPUT_CONFIG_VERSION,
+      outputs: [
+        persisted({ label: 'output-1', mode: 'projector-warp' }),
+        persisted({ label: 'output-2', mode: 'fisheye' as PersistedOutput['mode'] }),
+      ],
+      autoRestoreOnLaunch: true,
+    })
+    // Dropped, never restored as sos-equirect: a mode that comes back as
+    // another is an unwarped picture across projectors calibrated for a
+    // warp, which is exactly what a build without rung 16 now declines.
+    expect(parseOutputConfig(raw).outputs.map((o) => [o.label, o.mode])).toEqual([['output-1', 'projector-warp']])
+  })
+
   it('drops one malformed entry and keeps the rest', () => {
     const raw = JSON.stringify({
       version: OUTPUT_CONFIG_VERSION,

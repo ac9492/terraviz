@@ -157,6 +157,28 @@ function report(event: Parameters<typeof emit>[0]): void {
   }
 }
 
+/**
+ * The bucket an output of this mode reports.
+ *
+ * A `projector-warp` window sizes its buffer to the display it spans and
+ * never reads `framebufferWidth` (rung 16), so bucketing the stored value
+ * would report a 4k frame for a window that has none — the one field on
+ * this event that would then be a claim rather than a measurement. A
+ * `switch` over the mode so that a third one has to decide which it is.
+ */
+export function framebufferBucketFor(mode: OutputMode, framebufferWidth: number): FramebufferBucket {
+  switch (mode) {
+    case 'sos-equirect':
+      return framebufferBucket(framebufferWidth)
+    case 'projector-warp':
+      return 'native'
+    default: {
+      const unreachable: never = mode
+      return unreachable
+    }
+  }
+}
+
 /** One output window came up. Fires for a restore exactly as it does
  *  for an operator's Add — the event describes an output existing, and
  *  the manager spawns both through one function on purpose. */
@@ -168,7 +190,7 @@ export function reportOutputAdded(output: {
   report({
     event_type: 'output_added',
     mode: output.mode,
-    framebuffer_bucket: framebufferBucket(output.framebufferWidth),
+    framebuffer_bucket: framebufferBucketFor(output.mode, output.framebufferWidth),
     monitor_index: output.monitorIndex,
   })
 }

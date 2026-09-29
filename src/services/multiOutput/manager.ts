@@ -60,10 +60,12 @@ import {
   OUTPUT_RENDER_CONFIG_EVENT,
   OUTPUT_STATE_EVENT,
   STATE_TICK_MS,
+  DEFAULT_OUTPUT_MODE,
   defaultRenderConfig,
   isOutputLabel,
   outputLabel,
   outputLabelIndex,
+  outputModeQuery,
   type MirroredGlobeState,
   type OutputEvent,
   type OutputMode,
@@ -109,7 +111,9 @@ import type { OutputRemovedReason } from '../../types'
 import { logger } from '../../utils/logger'
 
 /** Where the output bundle lands in the build. `vite.config.ts` roots
- *  at `src/`, so `src/output/output.html` becomes this. */
+ *  at `src/`, so `src/output/output.html` becomes this. A window is
+ *  spawned at this plus `outputModeQuery(mode)` — bare for
+ *  `sos-equirect`, as before rung 16. */
 export const OUTPUT_ENTRY_URL = 'output/output.html'
 
 // --- The platform seam ---
@@ -449,7 +453,7 @@ export class MultiOutputManager {
       outputLabel(this.nextIndex++),
       monitor,
       options.monitorIndex,
-      options.mode ?? 'sos-equirect',
+      options.mode ?? DEFAULT_OUTPUT_MODE,
       { ...DEFAULT_VIEW_SETTINGS, ...definedOnly(options.view) },
       { ...defaultRenderConfig(), ...definedOnly(options.render) },
     )
@@ -523,7 +527,10 @@ export class MultiOutputManager {
       )
     }
 
-    const handle = await this.host.createWindow(label, OUTPUT_ENTRY_URL)
+    // The mode rides the URL because that is the one thing a window can
+    // read before any IPC exists (`outputModeQuery`): it has to know
+    // what it is before it can tell a view meant for something else.
+    const handle = await this.host.createWindow(label, `${OUTPUT_ENTRY_URL}${outputModeQuery(mode)}`)
 
     const record: OutputRecord = {
       label,
@@ -1422,6 +1429,16 @@ export class MultiOutputManager {
     // a bare acknowledgement — whatever cost it the heartbeat may have
     // cost it a diff, and a full snapshot is the same round trip.
     if (event.type === 'output_ready' || event.type === 'output_health_check') {
+      // Served regardless, because the output drops a view arm that is
+      // not its own and keeps everything else — but said, because a
+      // window announcing a different geometry from the URL it was
+      // spawned with means the two ends of this build disagree about
+      // what a URL says, which nothing else would surface.
+      if (event.type === 'output_ready' && event.mode !== record.mode) {
+        logger.error(
+          `[multiOutput] ${event.label} announced '${event.mode}' but was spawned as '${record.mode}'`,
+        )
+      }
       record.ready = true
       // Config first. A restored 8K output that received its state
       // before its resolution would render one or more frames at the
