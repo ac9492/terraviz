@@ -11,6 +11,7 @@ import type { BundleLayout } from '../services/multiOutput/warpImport'
 import {
   buildWarpSection,
   describeWarpRefusal,
+  displayStretchPercent,
   rasterStretchPercent,
   warpRotationNote,
   type OutputWarpManager,
@@ -84,10 +85,37 @@ function resetBody(): void {
 
 const announced = (): string => document.getElementById('a11y-announcer')!.textContent ?? ''
 
-function mountSection(over: Partial<OutputRecord> = {}, mgr = fakeManager()) {
-  const section = buildWarpSection(mgr.mgr, record(over), MONITOR, 'PROJECTORS', repaint as () => void)
+function mountSection(over: Partial<OutputRecord> = {}, mgr = fakeManager(), monitor = MONITOR) {
+  const section = buildWarpSection(mgr.mgr, record({ monitor, ...over }), monitor, 'PROJECTORS', repaint as () => void)
   document.body.appendChild(section)
   return { section, ...mgr }
+}
+
+/** A desk monitor of another shape: 16:10 against a 16:9 calibration. */
+const DESK: OutputMonitor = { ...MONITOR, name: 'DESK', size: { width: 1680, height: 1050 } }
+
+/** SOS's quadrants as a bundle's layout states them, on the display sphere-sim's default rig spans. */
+const SOS_RIG: BundleLayout = {
+  framebuffer: { width: 7680, height: 4320 },
+  texture: { surface: 'sphere', rotationOffsetDeg: 0 },
+  projectors: [
+    { id: 'P1', viewport: { x: 0, y: 0, w: 0.5, h: 0.5 } },
+    { id: 'P2', viewport: { x: 0.5, y: 0, w: 0.5, h: 0.5 } },
+    { id: 'P3', viewport: { x: 0, y: 0.5, w: 0.5, h: 0.5 } },
+    { id: 'P4', viewport: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 } },
+  ],
+}
+
+/** Read `sources` on `monitor` and return the warnings the panel shows before the choice. */
+async function warningsFor(sources: WarpSource[], layout: BundleLayout | null, monitor: OutputMonitor): Promise<string[]> {
+  const mgr = fakeManager()
+  mgr.raw.readWarpFiles.mockResolvedValue({ ok: true, sources, layout })
+  const { section } = mountSection({}, mgr, monitor)
+  pick(section, ['rig.zip'])
+  await until(() => section.querySelector('.output-warp-choose') !== null, 'the choice')
+  const warnings = [...section.querySelectorAll('.output-warp-pending .output-warning')].map((el) => el.textContent ?? '')
+  resetBody()
+  return warnings
 }
 
 describe('rasterStretchPercent', () => {
@@ -98,6 +126,15 @@ describe('rasterStretchPercent', () => {
     expect(rasterStretchPercent(16 / 9, quadrant, { width: 4096, height: 2160 })).toBe(7)
     expect(rasterStretchPercent(4 / 3, quadrant, { width: 3840, height: 2160 })).toBe(33)
     expect(rasterStretchPercent(0, quadrant, { width: 3840, height: 2160 })).toBeNull()
+  })
+})
+
+describe('displayStretchPercent', () => {
+  it('measures a whole display against the one a bundle was solved for', () => {
+    expect(displayStretchPercent({ width: 7680, height: 4320 }, { width: 3840, height: 2160 })).toBeNull()
+    // The desk monitor from the first hardware import: 16:10 under a 16:9 rig.
+    expect(displayStretchPercent({ width: 7680, height: 4320 }, { width: 1680, height: 1050 })).toBe(10)
+    expect(displayStretchPercent({ width: 4096, height: 2160 }, { width: 3840, height: 2160 })).toBe(6)
   })
 })
 
@@ -281,12 +318,49 @@ describe('buildWarpSection', () => {
       return text
     }
 
-    // This display is 3840×2160: the same size says nothing, twice the size
-    // is a resample, and another shape is a stretch.
+    // This display is 3840×2160: the same size says nothing, and twice the
+    // size is a resample.
     expect(await read(quadrants({ width: 3840, height: 2160 }))).not.toContain('Solved for')
     expect(await read(quadrants({ width: 7680, height: 4320 }))).toContain('the same shape, so every mesh is resampled')
-    expect(await read(quadrants({ width: 4096, height: 2160 }))).toContain('a different shape, so the picture will be stretched')
     expect(await read(quadrants({ width: 3840, height: 2160 }))).toContain("a model's own texture layout")
+  })
+
+  it('says a stretch every projector shares once, as a fact about the display', async () => {
+    // The first hardware import: sphere-sim's default rig, read on a 16:10
+    // desk monitor. Every mesh fits the display it was solved for, so this
+    // display is the whole story — one line, not one per projector.
+    const sources = ['P1', 'P2', 'P3', 'P4'].map((id) => source(id))
+    expect(await warningsFor(sources, SOS_RIG, DESK)).toEqual([
+      "Solved for a 7680×4320 display, but this one is 1680×1050, a different shape, so every projector's picture will be stretched by 10%.",
+    ])
+    expect(await warningsFor([source('P1')], { ...SOS_RIG, projectors: SOS_RIG.projectors.slice(0, 1) }, DESK)).toEqual([
+      "Solved for a 7680×4320 display, but this one is 1680×1050, a different shape, so the projector's picture will be stretched by 10%.",
+    ])
+    // On a display of its own shape, nothing to say beyond the resample.
+    expect(await warningsFor(sources, SOS_RIG, MONITOR)).toEqual([])
+  })
+
+  it('reports each picture as it will be when a mesh does not fit even its own layout', async () => {
+    // P4 is a 4:3 mesh in a 16:9 quadrant of its own layout, so the
+    // display is not the whole story: it is stated as a fact, and each
+    // picture as it will be on this display, shared stretches once.
+    const sources = [source('P1'), source('P2'), source('P3'), source('P4', 4 / 3)]
+    expect(await warningsFor(sources, SOS_RIG, DESK)).toEqual([
+      'Solved for a 7680×4320 display, but this one is 1680×1050, a different shape.',
+      'P1, P2, P3 were solved for 1.778:1 rasters, but their parts of this display are 1.600:1, so their pictures will be stretched by 10%.',
+      'P4 was solved for a 1.333:1 raster, but its part of this display is 1.600:1, so its picture will be stretched by 20%.',
+    ])
+    // The same misfit on the display it was solved for: no display line,
+    // and only the mesh that does not fit.
+    expect(await warningsFor(sources, SOS_RIG, MONITOR)).toEqual([
+      'P4 was solved for a 1.333:1 raster, but its part of this display is 1.778:1, so its picture will be stretched by 33%.',
+    ])
+    // A layout at odds with its mesh, on a display that happens to suit
+    // the mesh: the two cancel, and the picture is not warned about.
+    const dci = { ...SOS_RIG, framebuffer: { width: 4096, height: 2160 }, projectors: SOS_RIG.projectors.slice(0, 1) }
+    expect(await warningsFor([source('P1')], dci, MONITOR)).toEqual([
+      'Solved for a 4096×2160 display, but this one is 3840×2160, a different shape.',
+    ])
   })
 
   it('imports nothing when the operator declines', async () => {
@@ -308,6 +382,18 @@ describe('buildWarpSection', () => {
     await until(() => section.querySelector('.output-warp-choose') !== null, 'the layout question')
 
     expect(section.querySelector('.output-warp-pending .output-warning')!.textContent).toContain('stretched by 33%')
+  })
+
+  it('says a stretch shared by several meshes once when placing them in quadrants', async () => {
+    const sources = ['P1', 'P2', 'P3', 'P4'].map((id) => source(id))
+    expect(await warningsFor(sources, null, DESK)).toEqual([
+      'P1, P2, P3, P4 were solved for 1.778:1 rasters, but their parts of this display are 1.600:1, so their pictures will be stretched by 10%.',
+    ])
+    // Two projector models: one sentence each.
+    expect(await warningsFor([source('P1'), source('P2', 4 / 3), source('P3'), source('P4', 4 / 3)], null, DESK)).toEqual([
+      'P1, P3 were solved for 1.778:1 rasters, but their parts of this display are 1.600:1, so their pictures will be stretched by 10%.',
+      'P2, P4 were solved for 1.333:1 rasters, but their parts of this display are 1.600:1, so their pictures will be stretched by 20%.',
+    ])
   })
 
   it('shows a refusal from reading, and one from importing, without repainting', async () => {

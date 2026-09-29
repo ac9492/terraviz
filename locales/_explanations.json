@@ -280,7 +280,6 @@
   "vr.zoomSlider.title": "Tooltip on the in-AR zoom slider when hovered with a pointer. Brief — appears as a native browser tooltip.",
   "outputs.mode.optionProjectorWarp": "Option in the Outputs panel's output-type picker. A projector rig is several video projectors lighting one physical sphere or dome; \"sphere-sim\" is the name of the calibration tool that produces the warp, and \"warp\" is its correction for where each projector's pixels land. Keep \"sphere-sim\" as is.",
   "outputs.mode.optionSosEquirect": "Option in the Outputs panel's output-type picker, for a display that takes a single flat world map: an LED sphere, or a dome. \"Equirectangular\" is the map projection's technical name.",
-  "outputs.warp.aspectMismatch": "Warning before a warp is imported. {id} is a projector id such as \"P3\" (do not translate). {mesh} and {viewport} are width-to-height ratios such as \"1.778\"; keep the \":1\" after each. {percent} is a whole number.",
   "outputs.warp.askQuadrants": "Question before a warp is imported. Science On a Sphere (SOS) drives its four projectors from one screen split into four quarters (\"quadrants\"); this asks whether to use that arrangement. Keep \"Science On a Sphere\".",
   "outputs.warp.blendGamma": "Label for a number field. \"Blend\" is how overlapping projectors fade into each other; \"gamma\" is the display's brightness curve, a technical term usually left untranslated.",
   "outputs.warp.contentRotation": "Label for a rotation control on a projector-rig output. It turns the picture shown on the sphere, not the projectors or the sphere. The unit is degrees.",
@@ -296,8 +295,12 @@
   "outputs.warp.viewportEntry": "Screen-reader text for one box of the display diagram. {id} is a projector name such as P1; the percentages place its rectangle on the display, measured from the bottom-left corner. Keep 'left' and 'bottom' literal: the picture does not mirror in right-to-left languages.",
   "outputs.warp.bakedRotationSphere": "{degrees} is the rotation sphere-sim already built into the warp meshes. 'Content rotation' is the name of a separate control in the same panel.",
   "outputs.warp.framebufferResampled": "{solvedWidth}×{solvedHeight} is the display size the calibration was made for; {width}×{height} is this display's. Keep the × sign.",
-  "outputs.warp.framebufferStretched": "{solvedWidth}×{solvedHeight} is the display size the calibration was made for; {width}×{height} is this display's. Keep the × sign.",
   "outputs.warp.warpRotationSphere": "Shown beside the 'Content rotation' control. {degrees} is a rotation already built into the warp by sphere-sim; the operator must not enter it again.",
   "outputs.warp.refusal.bundleLayout": "{file} is a file inside the bundle, such as rig.zip/layout.json. {reason} is a technical code left untranslated, such as unknown-mesh: warp/P5.data.",
-  "outputs.warp.refusal.bundleLayoutFormat": "{file} is a file inside the bundle, such as rig.zip/layout.json. {format} is the format name the file declares, left untranslated."
+  "outputs.warp.refusal.bundleLayoutFormat": "{file} is a file inside the bundle, such as rig.zip/layout.json. {format} is the format name the file declares, left untranslated.",
+  "outputs.warp.aspectMismatch.one": "Warning before a warp is imported, for one projector. {ids} is a projector id such as \"P3\" (do not translate). {mesh} and {viewport} are width-to-height ratios such as \"1.778\"; keep the \":1\" after each. {percent} is a whole number.",
+  "outputs.warp.aspectMismatch.other": "As outputs.warp.aspectMismatch.one, for several projectors stretched by the same amount. {ids} is a comma-separated list of projector ids such as \"P1, P2, P3\" (do not translate).",
+  "outputs.warp.framebufferDifferentShape": "{solvedWidth}×{solvedHeight} is the display size the calibration was made for; {width}×{height} is this display's. Keep the × sign. A warning for each affected projector follows it.",
+  "outputs.warp.framebufferStretched.one": "{solvedWidth}×{solvedHeight} is the display size the calibration was made for; {width}×{height} is this display's. Keep the × sign. {percent} is a whole number. Used when the bundle has one projector.",
+  "outputs.warp.framebufferStretched.other": "As outputs.warp.framebufferStretched.one, for a bundle with several projectors, all stretched by the same amount."
 }

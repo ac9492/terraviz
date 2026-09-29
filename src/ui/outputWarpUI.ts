@@ -22,10 +22,16 @@
  * either way; there is no silent default.
  *
  * **The raster's shape is checked, not enforced.** A mesh's `x` span
- * states the aspect it was solved for, and a quadrant of this display
+ * states the aspect it was solved for, and its part of this display
  * has one of its own. A mismatch stretches the picture, but the
  * operator may know the lens compensates, so it is a warning shown
- * before the choice rather than a refusal.
+ * before the choice rather than a refusal. Each stretch is said
+ * **once**. The usual rig is one projector model throughout, so on a
+ * display of the wrong shape every mesh is off by the same amount, and
+ * four copies of one sentence read as four problems. Meshes that would
+ * read the same sentence share it. When a bundle's meshes all fit the
+ * display they were solved for, the cause is this display, and it is
+ * said as one line about the display.
  *
  * **Every refusal is worded.** The import is fail-closed from end to
  * end, so each code the manager can return has a sentence here — the
@@ -76,9 +82,6 @@ const SOS_QUADRANTS: readonly { readonly id: string; readonly viewport: Viewport
   { id: 'P4', viewport: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 } },
 ]
 
-/** Two display shapes this close are one shape: a rounding, not a stretch. */
-const SAME_SHAPE = 0.01
-
 /**
  * How far a mesh's picture is stretched in its viewport, as a percentage,
  * or `null` when the two agree to within 1%.
@@ -96,6 +99,76 @@ export function rasterStretchPercent(
   if (!(meshAspect > 0) || !(viewportAspect > 0)) return null
   const stretch = Math.abs(viewportAspect / meshAspect - 1) * 100
   return stretch < 1 ? null : Math.round(stretch)
+}
+
+/**
+ * How far this display's shape is from the one a bundle was solved for,
+ * in `rasterStretchPercent`'s terms, or `null` within 1%. A layout places
+ * each viewport as a fraction of the display, so a change of shape
+ * stretches every viewport by exactly this amount.
+ */
+export function displayStretchPercent(
+  solved: { width: number; height: number },
+  display: { width: number; height: number },
+): number | null {
+  return rasterStretchPercent(solved.width / solved.height, { w: 1, h: 1 }, display)
+}
+
+/** A mesh with the viewport it would fill. */
+interface PlacedMesh {
+  readonly id: string
+  readonly aspect: number
+  readonly viewport: Viewport
+}
+
+/** One stretch sentence, and the meshes it is true of. */
+interface StretchGroup {
+  readonly ids: string[]
+  readonly mesh: string
+  readonly viewport: string
+  readonly percent: number
+}
+
+/** Each source with the viewport `viewportOf` gives it; a source with none is left out. */
+function placeMeshes(sources: readonly WarpSource[], viewportOf: (id: string) => Viewport | undefined): PlacedMesh[] {
+  return sources.flatMap(source => {
+    const viewport = viewportOf(source.id)
+    return viewport === undefined ? [] : [{ id: source.id, aspect: source.mesh.aspect, viewport }]
+  })
+}
+
+/**
+ * The meshes `display` would stretch, grouped by the sentence each would
+ * read. The key is the text as shown, rounding included, because what an
+ * operator reads decides what counts as one sentence.
+ */
+function stretchGroups(meshes: readonly PlacedMesh[], display: { width: number; height: number }): StretchGroup[] {
+  const groups = new Map<string, StretchGroup>()
+  for (const { id, aspect, viewport } of meshes) {
+    const percent = rasterStretchPercent(aspect, viewport, display)
+    if (percent === null) continue
+    const mesh = aspect.toFixed(3)
+    const shape = ((viewport.w * display.width) / (viewport.h * display.height)).toFixed(3)
+    const key = `${mesh} ${shape} ${percent}`
+    const group = groups.get(key)
+    if (group) group.ids.push(id)
+    else groups.set(key, { ids: [id], mesh, viewport: shape, percent })
+  }
+  return [...groups.values()]
+}
+
+/** One warning per group, shown before the choice. */
+function stretchWarnings(groups: readonly StretchGroup[]): HTMLElement[] {
+  return groups.map(({ ids, mesh, viewport, percent }) =>
+    paragraph(
+      plural(
+        ids.length,
+        { one: 'outputs.warp.aspectMismatch.one', other: 'outputs.warp.aspectMismatch.other' },
+        { ids: ids.join(', '), mesh, viewport, percent },
+      ),
+      'output-warning',
+    ),
+  )
 }
 
 /** A refusal from any step of the import, as the sentence the panel shows. */
@@ -367,31 +440,6 @@ export function buildWarpSection(
     )
 
   /**
-   * A warning for each mesh whose raster is not the shape of the part of
-   * this display it would fill — shown before the choice, since the
-   * operator may know the lens compensates.
-   */
-  const stretchWarnings = (sources: readonly WarpSource[], viewportOf: (id: string) => Viewport | undefined): HTMLElement[] =>
-    sources.flatMap(source => {
-      const viewport = viewportOf(source.id)
-      if (viewport === undefined) return []
-      const stretch = rasterStretchPercent(source.mesh.aspect, viewport, monitor.size)
-      if (stretch === null) return []
-      const shape = (viewport.w * monitor.size.width) / (viewport.h * monitor.size.height)
-      return [
-        paragraph(
-          t('outputs.warp.aspectMismatch', {
-            id: source.id,
-            mesh: source.mesh.aspect.toFixed(3),
-            viewport: shape.toFixed(3),
-            percent: stretch,
-          }),
-          'output-warning',
-        ),
-      ]
-    })
-
-  /**
    * The two buttons that end either flow. The confirm button imports by
    * `placement`; Cancel clears the question and imports nothing.
    */
@@ -444,7 +492,12 @@ export function buildWarpSection(
         monitor.size,
       ),
       paragraph(t('outputs.warp.quadrantsKey'), 'output-note'),
-      ...stretchWarnings(sources, id => SOS_QUADRANTS.find(q => q.id === id)?.viewport),
+      ...stretchWarnings(
+        stretchGroups(
+          placeMeshes(sources, id => SOS_QUADRANTS.find(q => q.id === id)?.viewport),
+          monitor.size,
+        ),
+      ),
       decision(sources, 'sos-quadrants', t('outputs.warp.useQuadrants')),
     ]
   }
@@ -456,7 +509,7 @@ export function buildWarpSection(
    * layout before the projectors change.
    */
   const confirmBundleLayout = (sources: readonly WarpSource[], layout: BundleLayout): HTMLElement[] => {
-    const viewportOf = (id: string): Viewport | undefined => layout.projectors.find(p => p.id === id)?.viewport
+    const meshes = placeMeshes(sources, id => layout.projectors.find(p => p.id === id)?.viewport)
     const parts: HTMLElement[] = [
       arrived(sources),
       paragraph(t('outputs.warp.bundlePlaces'), 'output-note'),
@@ -476,16 +529,38 @@ export function buildWarpSection(
     ]
     const solved = layout.framebuffer
     const here = monitor.size
+    // What each picture will actually be on this display: the truth the
+    // warnings report, unless one line about the display says it all.
+    let stretched = stretchGroups(meshes, here)
     if (solved.width !== here.width || solved.height !== here.height) {
-      const sameShape = Math.abs((solved.width / solved.height) / (here.width / here.height) - 1) < SAME_SHAPE
       const params = { solvedWidth: solved.width, solvedHeight: solved.height, width: here.width, height: here.height }
-      parts.push(
-        sameShape
-          ? paragraph(t('outputs.warp.framebufferResampled', params), 'output-note')
-          : paragraph(t('outputs.warp.framebufferStretched', params), 'output-warning'),
-      )
+      const reshaped = displayStretchPercent(solved, here)
+      if (reshaped === null) {
+        parts.push(paragraph(t('outputs.warp.framebufferResampled', params), 'output-note'))
+      } else if (stretchGroups(meshes, solved).length === 0) {
+        // Every mesh fits the display it was solved for, so this display's
+        // shape is the whole story: each picture is stretched by exactly
+        // `reshaped`, and one line says so for every projector.
+        parts.push(
+          paragraph(
+            plural(
+              meshes.length,
+              { one: 'outputs.warp.framebufferStretched.one', other: 'outputs.warp.framebufferStretched.other' },
+              { ...params, percent: reshaped },
+            ),
+            'output-warning',
+          ),
+        )
+        stretched = []
+      } else {
+        // A mesh that does not fit even its own layout: the display is
+        // not the whole story, so it is stated as a fact and each picture
+        // is reported as it will be here. The two can cancel, and a
+        // projector this display happens to suit gets no warning.
+        parts.push(paragraph(t('outputs.warp.framebufferDifferentShape', params), 'output-warning'))
+      }
     }
-    parts.push(...stretchWarnings(sources, viewportOf), decision(sources, layout, t('outputs.warp.useBundleLayout')))
+    parts.push(...stretchWarnings(stretched), decision(sources, layout, t('outputs.warp.useBundleLayout')))
     return parts
   }
 

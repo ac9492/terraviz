@@ -384,7 +384,19 @@ display a mesh would fill is not the shape it was solved for. The usual cause
 is a 4096×2160 span, whose 2048×1080 quadrants stretch a 16:9
 calibration by 7%. Span at the resolution the calibration used —
 1920×1080 per projector for SOS — rather than accept it, unless you
-know the lenses compensate.
+know the lenses compensate. When every projector is stretched by the
+same amount, the panel says so once. For a bundle, which names the
+display it was solved for, that line reads *Solved for a 7680×4320
+display, but this one is 3840×2400…*: the cause is the display, not
+the meshes. Projectors are named only where the display does not
+explain everything. That happens with loose files, which name no
+display, or with a mesh that does not fit even the display its bundle
+was solved for.
+
+**Importing on a desk monitor to look at a bundle is harmless.** The
+monitor is rarely the rig's shape, so the preview carries the stretch
+warning, and each quadrant's disc comes out slightly oval. Nothing is
+wrong with the calibration: import it again on the spanned display.
 
 **The app keeps its own copy of the warp.** After the import it no
 longer needs the file, so a calibration can arrive on a USB stick
