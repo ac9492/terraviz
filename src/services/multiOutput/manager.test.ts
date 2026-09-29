@@ -2046,6 +2046,28 @@ describe('telemetry', () => {
     ])
   })
 
+  it('reports a projector-warp output as native, added or restored', async () => {
+    // Its stored width names a 2:1 frame it does not draw, and its real
+    // spanned size would fingerprint a rig — so neither goes on the wire.
+    const fake = createFakeHost()
+    const manager = makeManager(fake.host)
+    await manager.addOutput({ monitorIndex: 0, mode: 'projector-warp', render: { framebufferWidth: 8192 } })
+
+    const restoring = createFakeHost()
+    const restorer = makeManager(restoring.host, {
+      store: memoryStore({
+        autoRestoreOnLaunch: true,
+        outputs: [{ ...persistedOn('output-1', MONITORS[1]), mode: 'projector-warp' }],
+      }),
+    })
+    await restorer.restoreOutputs()
+
+    expect(reported('output_added')).toEqual([
+      { event_type: 'output_added', mode: 'projector-warp', framebuffer_bucket: 'native', monitor_index: 0 },
+      { event_type: 'output_added', mode: 'projector-warp', framebuffer_bucket: 'native', monitor_index: 1 },
+    ])
+  })
+
   it('reports a restored output too', async () => {
     // The event describes an output existing rather than an operator
     // gesture, and an installation that brings four back every launch

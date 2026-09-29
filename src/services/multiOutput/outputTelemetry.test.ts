@@ -111,8 +111,8 @@ describe('the reporters', () => {
   })
 
   it('reports a projector-warp output as native, never as the width it does not read', () => {
-    // That window sizes its buffer to the display it spans; bucketing
-    // its stored default would report a 4k frame that does not exist.
+    // That window draws projector rasters, not an equirect frame, so no
+    // rung describes it — bucketing its stored width would name one.
     expect(framebufferBucketFor('projector-warp', 4096)).toBe('native')
     expect(framebufferBucketFor('sos-equirect', 4096)).toBe('4k')
     reportOutputAdded({ mode: 'projector-warp', framebufferWidth: 4096, monitorIndex: 1 })

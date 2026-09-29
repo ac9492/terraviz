@@ -3774,8 +3774,10 @@ checklist, which is what they were built for.
     spawned with is logged by the manager and still served. Until there
     were two modes the manager had nothing to compare.
   - `output_added` reports a `projector-warp` window's framebuffer as
-    `native`. That window never reads `framebufferWidth`, so bucketing
-    the stored default would report a 4k frame that does not exist.
+    `native`. That window draws projector rasters rather than an
+    equirect frame, so no rung on the ladder describes it, and
+    bucketing its stored width would name a 2:1 frame it does not
+    draw.
 - **No set yet.** Until the geometry lands, a `projector-warp` window
   hides the quad and clears its rasters to black. That is this
   section's "holding no set" state, with the stated reason still to
@@ -4568,15 +4570,31 @@ renderer somewhere" — which we don't. Direct RTT.
    > because the next person to add a field to these events
    > should be adding it to a tuple whose shape someone has
    > already looked at.
+   >
+   > **Rung 16 adds one bit to it and nothing else.** `mode` now
+   > has two values, so it says whether an installation drives a
+   > projector rig. `native` carries nothing beyond that bit,
+   > because it is fully determined by `mode`. The obvious
+   > alternative was rejected on this ground: bucketing a warp
+   > window's real, spanned display size (7680×1200 across four
+   > projectors, say) would fingerprint a specific rig. Nothing
+   > from the warp set itself — its content id, a mesh count, the
+   > blend gamma — is on any event. Adding any of them would put a
+   > stable, installation-unique value on the wire, which is an
+   > escalation trigger.
    The output window itself emits
    nothing. Telemetry from a capture-clean LED-sphere
    surface would also be a capture-clean policy violation
    (§3.6) — outputs phone nothing home. Three new events
    ship from the **control window**, all Tier A:
 
-   - `output_added` — fields: `mode` (`'sos-equirect'`),
+   - `output_added` — fields: `mode` (`'sos-equirect'`, and
+     since rung 16 `'projector-warp'`),
      `framebuffer_bucket` (`'1k' | '2k' | '4k' | '8k'`
-     bucketed to avoid identifying exact resolutions),
+     bucketed to avoid identifying exact resolutions, or
+     `'native'` for a `projector-warp` window, which draws
+     projector rasters rather than an equirect frame, so no
+     rung describes it),
      `monitor_index` (the position in the monitor
      enumeration — never the OS-reported monitor name).
      **Corrected from "0 = primary, 1+ = secondaries",

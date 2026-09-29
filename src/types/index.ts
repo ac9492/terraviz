@@ -1205,9 +1205,10 @@ export type ErrorSource =
 
 /** A framebuffer rung by name. The exact pixel width is a machine
  *  fingerprint; which rung an installation chose is the question.
- *  `native` is a `projector-warp` output (rung 16), which sizes its
- *  buffer to the display it spans and has no rung to name — reporting
- *  the unread default would claim a 4k frame that does not exist. */
+ *  `native` is a `projector-warp` output (rung 16), which draws
+ *  projector rasters rather than an equirect frame, so no rung on the
+ *  ladder describes it — bucketing its stored width would name a 2:1
+ *  frame it does not draw. */
 export type FramebufferBucket = '1k' | '2k' | '4k' | '8k' | 'native'
 /** Why an output stopped running — or, for the storm guard, never
  *  started. `gpu-loss-timeout` and `monitor-gone` are declared now and

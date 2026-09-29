@@ -431,9 +431,11 @@ never the OS-reported display name.
 | `double2` | `monitor_index` | — | `retries` |
 
 `framebuffer_bucket` is `native` for a `projector-warp` output
-(rung 16): that window sizes its buffer to the display it spans and has
-no rung, so bucketing its unread stored width would report a frame that
-does not exist.
+(rung 16): that window draws projector rasters rather than an
+equirect frame, so no rung on the ladder describes it, and bucketing
+its stored width would name a 2:1 frame it does not draw. Its real,
+spanned display size is deliberately not reported — that would
+fingerprint a rig.
 
 `output_removed.reason` is one of `operator-close`, `crash`,
 `monitor-gone`, `gpu-loss-timeout`, `rejected-by-storm-guard`.

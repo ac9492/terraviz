@@ -160,11 +160,13 @@ function report(event: Parameters<typeof emit>[0]): void {
 /**
  * The bucket an output of this mode reports.
  *
- * A `projector-warp` window sizes its buffer to the display it spans and
- * never reads `framebufferWidth` (rung 16), so bucketing the stored value
- * would report a 4k frame for a window that has none — the one field on
- * this event that would then be a claim rather than a measurement. A
- * `switch` over the mode so that a third one has to decide which it is.
+ * A `projector-warp` window (rung 16) draws projector rasters rather
+ * than an equirect frame, so no rung on the ladder describes it, and
+ * bucketing its stored `framebufferWidth` would name a 2:1 frame it does
+ * not draw — the one field on this event that would then be a claim
+ * rather than a measurement. Nor is its real size reported: a spanned
+ * display's pixel count would fingerprint a rig. A `switch` over the
+ * mode so that a third one has to decide which it is.
  */
 export function framebufferBucketFor(mode: OutputMode, framebufferWidth: number): FramebufferBucket {
   switch (mode) {
