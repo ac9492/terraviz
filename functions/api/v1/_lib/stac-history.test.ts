@@ -3,12 +3,13 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { stacRouteFixture } from './stac-test-helpers'
-import { historyInsertStatements, historyModels, prepareFrameHistory, type StacHistoryPublication } from './stac-history'
+import { historyInsertStatements, historyModels, prepareFrameHistory, prepareWorkflowHistory, type StacHistoryPublication } from './stac-history'
 import { readStacPublicationInput } from './stac-publication-store'
 import { publishDataset } from './dataset-mutations'
 import { readStacPublication } from './stac-publication'
 import type { CatalogEnv } from './env'
 import { serveStac } from './stac-http'
+import { clearTranscoding } from './asset-uploads'
 
 describe('immutable STAC history', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -63,7 +64,7 @@ describe('immutable STAC history', () => {
     } finally { sqlite.close() }
   })
 
-  it.each(["temporal_semantics='unknown'", "period='PT0S'", "end_time='2026-01-01T00:00:00Z'"])(
+  it.each(["temporal_semantics='unknown'", "period='PT0S'", "end_time='2026-01-01T00:00:00Z'", "visibility='private'", 'is_hidden=1'])(
     'does not invent frame time when %s', async change => {
       const { sqlite, env } = sequenceFixture()
       try {
@@ -72,6 +73,44 @@ describe('immutable STAC history', () => {
         expect(await prepareFrameHistory(env, row, '2026-09-29T00:00:00Z')).toBeNull()
       } finally { sqlite.close() }
     })
+
+  it('retains workflow revisions across bundle swaps and makes completion atomic', async () => {
+    const { sqlite, ids, env } = stacRouteFixture()
+    const configured: CatalogEnv = { ...env, R2_PUBLIC_BASE: 'https://data.example' }
+    const uploadId = '01ARZ3NDEKTSV4RRFFQ69G5FAV'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'Content-Type': 'application/vnd.apple.mpegurl' } })))
+    try {
+      sqlite.exec(`INSERT INTO publishers (id,email,display_name,role,status,created_at)
+        VALUES ('PUB','publisher@example.test','Publisher','service','active','2026-01-01');
+        INSERT INTO workflows (id,publisher_id,name,pipeline_json,metadata_template,schedule,target_dataset_id,created_at,updated_at)
+        SELECT 'WF','PUB','Recurring','{}','{}','P1D',id,'2026-01-01','2026-01-01' FROM datasets;
+        UPDATE datasets SET slug='workflow-output', format='video/mp4', transcoding=1, active_transcode_upload_id='${uploadId}'`)
+      const before = (await readStacPublicationInput(env.CATALOG_DB, true)).datasets[0].row
+      const now = '2026-09-29T00:00:00Z'
+      const completed = { ...before, data_ref: `r2:videos/${ids[0]}/${uploadId}/master.m3u8`, transcoding: null,
+        content_digest: null, active_transcode_upload_id: null, updated_at: now }
+      const prepared = (await prepareWorkflowHistory(configured, completed, now))!
+      expect(prepared).not.toBeNull()
+      expect(await clearTranscoding(env.CATALOG_DB, ids[0], uploadId, completed.data_ref, now, null,
+        historyInsertStatements(env.CATALOG_DB, prepared, before))).toBe(1)
+      const first = await readStacPublication(configured)
+      expect(first.products).toHaveLength(1)
+      expect(first.products[0].item!.id).toContain('-revision-')
+      expect(first.products[0].item!.assets.data).not.toHaveProperty('file:checksum')
+      const secondUpload = '01ARZ3NDEKTSV4RRFFQ69G5FAW'
+      sqlite.prepare('UPDATE datasets SET data_ref=?, start_time=?, end_time=?').run(
+        `r2:videos/${ids[0]}/${secondUpload}/master.m3u8`, '2026-01-03T00:00:00Z', '2026-01-04T00:00:00Z')
+      expect((await publishDataset(configured, ids[0])).ok).toBe(true)
+      expect((await publishDataset(configured, ids[0])).ok).toBe(true)
+      const later = await readStacPublication(configured)
+      expect(later.products).toHaveLength(2)
+      expect(later.products.find(product => product.item!.id === first.products[0].item!.id)!.item).toEqual(first.products[0].item)
+      const current = (await readStacPublicationInput(env.CATALOG_DB, true)).datasets[0].row
+      expect(await prepareWorkflowHistory(configured, { ...current, data_ref: 'url:https://data.example/latest.mp4' }, now)).toBeNull()
+      expect(await prepareWorkflowHistory(configured, { ...current, transcoding: 1 }, now)).toBeNull()
+      expect(await prepareWorkflowHistory(configured, { ...current, visibility: 'private' }, now)).toBeNull()
+    } finally { sqlite.close() }
+  })
 
   it('persists idempotent Items and prevents historical metadata mutation', async () => {
     const { sqlite, ids, env } = stacRouteFixture()

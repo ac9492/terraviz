@@ -40,3 +40,25 @@ are verified as before and are not independently archived by this step.
 
 Apply migration 0055 before deploying these readers. STAC remains opt-in through
 `STAC_ENABLED`; no production settings or data are changed by this PR.
+
+## Step 2: Workflow Revisions
+
+Workflow-owned datasets capture a revision when explicit publication succeeds,
+or when a verified transcode callback replaces an already published output.
+Only public, non-hidden publications are captured. The history insert and the
+guarded transcode update run in the same D1 transaction. Draft transcodes do not
+publish history; their later explicit publication captures it.
+
+Capture accepts upload-specific HLS bundle paths or content-addressed R2 assets
+with matching content digests. Mutable external URLs stay excluded. The stored
+snapshot fixes represented time, metadata and the primary asset. HLS receives
+no invented whole-bundle checksum. Frame-producing workflows use the immutable
+run bundle as their revision Item; non-workflow sequences use per-frame Items.
+
+Run success alone is not publication: the runner can finish while transcoding
+continues, and a no-data soft pass can succeed without an upload. Neither event
+creates history. Repeated publication of identical content and metadata reuses
+the saved identity; a new upload or changed metadata creates a new revision.
+No history is inferred from old workflow-run logs. Operators must retain the
+upload-specific bundles and content-addressed assets for historical Items to
+remain reachable. The existing reachability and count-budget checks still apply.

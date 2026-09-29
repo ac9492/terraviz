@@ -36,7 +36,7 @@ export interface StacHistoryPublication {
 export function historyModels(publication: StacHistoryPublication, parent: DatasetRow): StacDatasetReadModel[] {
   const model = JSON.parse(publication.model_json) as StacDatasetReadModel
   return publication.items.map(item => ({ ...model,
-    row: { ...model.row, data_ref: item.data_ref, content_digest: item.content_digest,
+    row: { ...model.row, data_ref: item.data_ref, content_digest: item.content_digest || null,
       format: item.format, start_time: item.start_time, end_time: item.end_time,
       visibility: parent.visibility, is_hidden: parent.is_hidden, published_at: parent.published_at,
       retracted_at: parent.retracted_at, transcoding: 0 },
@@ -46,7 +46,7 @@ export function historyModels(publication: StacHistoryPublication, parent: Datas
 }
 
 export async function prepareFrameHistory(env: CatalogEnv, row: DatasetRow, capturedAt: string): Promise<StacHistoryPublication | null> {
-  if (!row.frame_count || !row.frame_extension || !row.frame_source_filenames_ref || !env.CATALOG_R2
+  if (row.visibility !== 'public' || row.is_hidden !== 0 || !row.frame_count || !row.frame_extension || !row.frame_source_filenames_ref || !env.CATALOG_R2
     || !evaluateTemporal(row).ready || !row.period) return null
   if (!['png', 'jpg', 'webp'].includes(row.frame_extension) || (parseIsoDuration(row.period) ?? 0) <= 0) return null
   const input = await readStacPublicationInput(env.CATALOG_DB!, true)
@@ -72,8 +72,27 @@ export async function prepareFrameHistory(env: CatalogEnv, row: DatasetRow, capt
     items: frames.map(frame => ({ ...frame, id: `${sourceKey}-${frame.ordinal}` })) }
 }
 
-export function historyInsertStatements(db: D1Database, publication: StacHistoryPublication): D1PreparedStatement[] {
-  const expected = (JSON.parse(publication.model_json) as StacDatasetReadModel).row
+export async function prepareWorkflowHistory(env: CatalogEnv, row: DatasetRow, capturedAt: string): Promise<StacHistoryPublication | null> {
+  if (row.visibility !== 'public' || row.is_hidden !== 0 || row.transcoding || !evaluateTemporal(row).ready) return null
+  const bundle = new RegExp(`^r2:videos/${row.id}/([0-9A-HJKMNP-TV-Z]{26})/master\\.m3u8$`).exec(row.data_ref)
+  const content = /^sha256:([a-f0-9]{64})$/.exec(row.content_digest ?? '')
+  const immutableAsset = content && row.data_ref.startsWith(`r2:datasets/${row.id}/by-digest/sha256/${content[1]}/`)
+  if (!bundle && !immutableAsset) return null
+  const input = await readStacPublicationInput(env.CATALOG_DB!, true)
+  const model = input.datasets.find(dataset => dataset.row.id === row.id)
+  if (model?.publicationKind !== 'workflow') return null
+  const snapshot: StacDatasetReadModel = { ...model, row: { ...model.row, ...row }, renditions: [] }
+  const sourceKey = (await computeEtag(JSON.stringify({ asset: bundle?.[1] ?? content![1], snapshot: {
+    ...snapshot, row: { ...snapshot.row, updated_at: null, published_at: null, retracted_at: null },
+  } }))).replace(/"/g, '')
+  return { id: `revision-${sourceKey}`, dataset_id: row.id, kind: 'revision', source_key: sourceKey,
+    model_json: JSON.stringify(snapshot), captured_at: capturedAt, items: [{ id: sourceKey, ordinal: 0,
+      data_ref: row.data_ref, content_digest: bundle ? '' : row.content_digest!, format: row.format,
+      start_time: row.start_time!, end_time: row.end_time! }] }
+}
+
+export function historyInsertStatements(db: D1Database, publication: StacHistoryPublication,
+  expected: DatasetRow = (JSON.parse(publication.model_json) as StacDatasetReadModel).row): D1PreparedStatement[] {
   const columns = Object.keys(expected).filter(key => /^[a-z_]+$/.test(key))
   const matches = `EXISTS(SELECT 1 FROM datasets WHERE id = ? AND NOT EXISTS
     (SELECT 1 FROM json_each(?) expected WHERE (CASE expected.key

@@ -1028,8 +1028,8 @@ export async function publishDataset(
   if (errors.length) return { ok: false, status: 400, errors }
 
   const now = new Date().toISOString()
-  const { prepareFrameHistory, historyInsertStatements } = await import('./stac-history')
-  const history = await prepareFrameHistory(env, row, now)
+  const { prepareFrameHistory, prepareWorkflowHistory, historyInsertStatements } = await import('./stac-history')
+  const history = await prepareFrameHistory(env, row, now) ?? await prepareWorkflowHistory(env, row, now)
   const publish = db
     .prepare(
       `UPDATE datasets SET published_at = ?, retracted_at = NULL, updated_at = ? WHERE id = ?`,
