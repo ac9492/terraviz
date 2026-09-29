@@ -25,6 +25,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('../../analytics', () => ({ emit: vi.fn() }))
 
 import { emit } from '../../analytics'
+import { until } from '../../test-utils'
 import {
   DEFAULT_BLEND_GAMMA,
   DEFAULT_FRAMEBUFFER_WIDTH,
@@ -144,6 +145,12 @@ interface FakeOptions {
   /** Labels among `existing` that answer the reattach poke. Omit for
    *  "all of them"; pass `[]` for a window that has gone unresponsive. */
   answerReattach?: string[]
+  /** The geometry a window says it is when it answers a poke, as its
+   *  own URL told it. Omit for `sos-equirect`. */
+  modes?: Record<string, OutputMode>
+  /** Hold every `close()` until this settles, as a window slow to tear
+   *  down does. */
+  closeGate?: Promise<unknown>
 }
 
 function createFakeHost(options: FakeOptions = {}) {
@@ -169,6 +176,7 @@ function createFakeHost(options: FakeOptions = {}) {
     show: async () => {},
     close: async () => {
       calls.push(`close:${label}`)
+      await options.closeGate
       if (options.failClose) throw new Error('close rejected')
       closed.push(label)
     },
@@ -223,7 +231,7 @@ function createFakeHost(options: FakeOptions = {}) {
       // inside that window either way.
       if (event === OUTPUT_REATTACH_EVENT) {
         const answers = options.answerReattach ?? options.existing ?? []
-        if (answers.includes(label)) send(ready(label))
+        if (answers.includes(label)) send(ready(label, options.modes?.[label]))
       }
     },
 
@@ -576,19 +584,31 @@ describe('broadcast', () => {
     expect((states[0].payload.state as { view: { mode: string } }).view.mode).toBe('projector-warp')
   })
 
-  it('serves a window that announces the wrong geometry, and says so', async () => {
-    // The output drops a view that is not its own and keeps the rest, so
-    // serving it costs nothing — but the two ends of one build disagreeing
-    // about what a URL says would otherwise surface nowhere.
+  it('closes a window that announces the wrong geometry, sends it nothing, and keeps its configuration', async () => {
+    // A projector-warp output driven as sos-equirect would put an
+    // unwarped globe across projectors calibrated for a warp. Not
+    // serving it is not enough, since an undriven output draws its own
+    // idle Earth, so it is closed. The configuration is not what is
+    // wrong, so it stays, and nothing in the telemetry schema is true of
+    // a build disagreeing with itself.
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fake = createFakeHost()
-    const manager = makeManager(fake.host)
+    const store = memoryStore()
+    const manager = makeManager(fake.host, { store })
     await manager.start()
     await manager.addOutput({ monitorIndex: 0, mode: 'projector-warp' })
+    const seen = vi.fn()
+    manager.onOutputsChanged(seen)
+    vi.mocked(emit).mockClear()
 
     fake.send(ready('output-1'))
+    await until(() => seen.mock.calls.length > 0, 'the panel told')
 
-    expect(stateEmits(fake.emitted)).toHaveLength(1)
+    expect(fake.closed).toEqual(['output-1'])
+    expect(fake.emitted).toEqual([])
+    expect(manager.outputs()).toEqual([])
+    expect(store.current().outputs.map(o => [o.label, o.mode])).toEqual([['output-1', 'projector-warp']])
+    expect(reported('output_removed')).toEqual([])
     expect(errors.mock.calls.flat().join(' ')).toMatch(/announced 'sos-equirect' but was spawned as 'projector-warp'/)
     errors.mockRestore()
   })
@@ -970,12 +990,14 @@ describe('a stale link (rung 13, case 3)', () => {
     ])
   })
 
-  it('serves an output whose announcement was missed', async () => {
+  it('serves an output whose announcement was missed, once it says what it is', async () => {
     // A ping proves the window is up and listening, which is what
     // `output_ready` proves. Without this an output that lost its
     // announcement — a manager restart, or the spawn-ordering race —
-    // stays un-served for the life of the window.
-    const fake = createFakeHost()
+    // stays un-served for the life of the window. A ping does not say
+    // what geometry the window is, so the reply is the reattach poke,
+    // and the window's answer is what gets served.
+    const fake = createFakeHost({ answerReattach: ['output-1'] })
     const manager = makeManager(fake.host)
     await manager.start()
     await manager.addOutput({ monitorIndex: 0 })
@@ -984,9 +1006,37 @@ describe('a stale link (rung 13, case 3)', () => {
     fake.emitted.length = 0
 
     fake.send({ type: 'output_health_check', label: 'output-1', silentMs: 5000 })
+    await until(() => stateEmits(fake.emitted).length > 0, 'the serve')
 
     expect(manager.outputs()[0].ready).toBe(true)
-    expect(stateEmits(fake.emitted)).toHaveLength(1)
+    expect(fake.emitted.map(e => e.event)).toEqual([
+      OUTPUT_REATTACH_EVENT,
+      OUTPUT_RENDER_CONFIG_EVENT,
+      OUTPUT_STATE_EVENT,
+    ])
+  })
+
+  it('sends nothing to a window that pings before announcing, until it says what it is', async () => {
+    // The ping is how a mismatched window would otherwise be driven
+    // before its announcement said what geometry it is.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fake = createFakeHost({ answerReattach: [] })
+    const manager = makeManager(fake.host)
+    await manager.start()
+    await manager.addOutput({ monitorIndex: 0, mode: 'projector-warp' })
+    fake.emitted.length = 0
+
+    fake.send({ type: 'output_health_check', label: 'output-1', silentMs: 5000 })
+    fake.send({ type: 'output_health_check', label: 'output-1', silentMs: 6000 })
+    await until(() => fake.emitted.length === 2, 'two pokes')
+
+    expect(fake.emitted.map(e => e.event)).toEqual([OUTPUT_REATTACH_EVENT, OUTPUT_REATTACH_EVENT])
+    expect(manager.outputs()[0].ready).toBe(false)
+
+    fake.send(ready('output-1'))
+    await until(() => fake.closed.length === 1, 'the close')
+    expect(fake.emitted.map(e => e.event)).toEqual([OUTPUT_REATTACH_EVENT, OUTPUT_REATTACH_EVENT])
+    errors.mockRestore()
   })
 
   it('badges an output that reported the link stale, and notifies', async () => {
@@ -2288,6 +2338,45 @@ describe('adoptOrphanedOutputs', () => {
     expect(order[2]).toBe(OUTPUT_STATE_EVENT)
   })
 
+  it('adopts a projector-warp survivor that says it is one', async () => {
+    const fake = createFakeHost({ existing: ['output-1'], modes: { 'output-1': 'projector-warp' } })
+    const store = memoryStore({ outputs: [{ ...persistedOn('output-1', MONITORS[0]), mode: 'projector-warp' }] })
+
+    const adopted = await makeManager(fake.host, { store }).adoptOrphanedOutputs()
+
+    expect(adopted.map(r => [r.label, r.mode])).toEqual([['output-1', 'projector-warp']])
+    expect(fake.closed).toEqual([])
+  })
+
+  it('closes a survivor that booted as a different geometry from its entry, and keeps the entry', async () => {
+    // The one reachable way to a mismatch: the record comes from the
+    // stored config and the mode from a window that outlived the page
+    // that wrote it. Driving it would put an unwarped picture on the
+    // projectors; the entry is kept so the next restore spawns it again
+    // from the right URL.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    // A close slow enough to outlast the reattach wait: the window did
+    // answer, so it must not be reported silent and closed a second time.
+    let release!: () => void
+    const fake = createFakeHost({ existing: ['output-1'], closeGate: new Promise<void>(r => (release = r)) })
+    const store = memoryStore({ outputs: [{ ...persistedOn('output-1', MONITORS[0]), mode: 'projector-warp' }] })
+    vi.mocked(emit).mockClear()
+
+    const manager = makeManager(fake.host, { store })
+    const adopted = await manager.adoptOrphanedOutputs()
+    release()
+    await until(() => fake.closed.length > 0, 'the close')
+
+    expect(adopted).toEqual([])
+    expect(fake.closed).toEqual(['output-1'])
+    expect(manager.outputs()).toEqual([])
+    expect(fake.emitted.filter(e => e.event !== OUTPUT_REATTACH_EVENT)).toEqual([])
+    expect(store.current().outputs.map(o => o.label)).toEqual(['output-1'])
+    expect(reported('output_removed')).toEqual([])
+    expect(reported('output_failure')).toEqual([])
+    errors.mockRestore()
+  })
+
   it('closes a window no persisted entry describes', async () => {
     const fake = createFakeHost({ existing: ['output-7'] })
     const store = memoryStore({ outputs: [] })
@@ -2515,6 +2604,49 @@ describe('warp sets (rung 16)', () => {
     expect(sent.warp?.texture).toEqual({ surface: 'sphere', rotationOffsetDeg: 37 })
     const stored = warpStore.read(result.id)
     expect(stored.ok && [stored.set.layoutFrom, stored.set.texture]).toEqual(['bundle', layout.texture])
+  })
+
+  /** SOS's P3 quadrant as a bundle's layout states it, rotation stated. */
+  const P3_LAYOUT = {
+    framebuffer: { width: 7680, height: 4320 },
+    texture: { surface: 'sphere', rotationOffsetDeg: 0 } as const,
+    projectors: [{ id: 'P3', viewport: { x: 0, y: 0.5, w: 0.5, h: 0.5 } }],
+  }
+
+  it('tells every output drawing a set what a later import says about its texture', async () => {
+    // The id leaves the texture out, so the same meshes imported without
+    // their layout.json and then with it are one set. Both rows name it,
+    // so both must state the same rotation.
+    const { fake, manager } = await warpOutput()
+    await manager.addOutput({ monitorIndex: 1, mode: 'projector-warp' })
+    fake.send(ready('output-2', 'projector-warp'))
+    const loose = await manager.importWarpSet('output-1', sources({ 'P3.data': MESH }), 'sos-quadrants')
+    fake.emitted.length = 0
+
+    const bundled = await manager.importWarpSet('output-2', sources({ 'P3.data': MESH }), P3_LAYOUT)
+
+    expect(bundled.ok && bundled.id).toBe(loose.ok && loose.id)
+    expect(manager.outputs().map(o => [o.label, o.render.warp?.texture])).toEqual([
+      ['output-1', P3_LAYOUT.texture],
+      ['output-2', P3_LAYOUT.texture],
+    ])
+    expect(configEmits(fake.emitted).map(e => [e.label, e.config.warp?.texture])).toEqual([
+      ['output-1', P3_LAYOUT.texture],
+      ['output-2', P3_LAYOUT.texture],
+    ])
+  })
+
+  it('keeps what a bundle said about a set when the same meshes arrive without it', async () => {
+    const { manager, warpStore } = await warpOutput()
+    const bundled = await manager.importWarpSet('output-1', sources({ 'P3.data': MESH }), P3_LAYOUT)
+    await manager.addOutput({ monitorIndex: 1, mode: 'projector-warp' })
+
+    const loose = await manager.importWarpSet('output-2', sources({ 'P3.data': MESH }), 'sos-quadrants')
+
+    expect(loose.ok && loose.id).toBe(bundled.ok && bundled.id)
+    expect(manager.outputs().map(o => o.render.warp?.texture)).toEqual([P3_LAYOUT.texture, P3_LAYOUT.texture])
+    const stored = warpStore.read(loose.ok ? loose.id : '')
+    expect(stored.ok && [stored.set.layoutFrom, stored.set.texture]).toEqual(['bundle', P3_LAYOUT.texture])
   })
 
   it('refuses, changing nothing, for an output that is not a warp output or does not exist', async () => {

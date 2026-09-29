@@ -678,9 +678,10 @@ export class MultiOutputManager {
    * Shared by the operator's Remove and by the boot scan's timeout for
    * the reason `spawn()` is shared by Add and restore: the *ordering*
    * is the correctness content, and a second copy is a second place for
-   * it to drift. Only the reported reason differs.
+   * it to drift. Only the reported reason differs. `null` reports
+   * nothing, for a window no reason in the schema is true of.
    */
-  private async discard(label: string, reason: OutputRemovedReason): Promise<void> {
+  private async discard(label: string, reason: OutputRemovedReason | null): Promise<void> {
     const handle = this.handles.get(label)
     // Before the close, not after: `onDestroyed` can fire while the
     // close is still being awaited, and a departure read in that window
@@ -708,7 +709,7 @@ export class MultiOutputManager {
     // calls it would report one `operator-close` per output. Nothing
     // calls it outside tests today; when something does, it wants its
     // own reason rather than this one.
-    if (record) reportOutputRemoved({ mode: record.mode, reason })
+    if (record && reason !== null) reportOutputRemoved({ mode: record.mode, reason })
     // **Persisted only for a deliberate removal**, which is
     // `commitDeparture`'s rule and has to be the same rule here or the
     // two disagree about what a crash costs. An output the operator
@@ -837,15 +838,33 @@ export class MultiOutputManager {
     if (record.mode !== 'projector-warp') return { ok: false, refusal: { code: 'not-a-warp-output' } }
     const assembled = assembleWarpSet(sources, placement)
     if (!assembled.ok) return assembled
-    const stored = this.warpStore.write(assembled.id, assembled.set, new Date(this.nowMs()).toISOString())
-    if (!stored.ok) return { ok: false, refusal: { code: 'storage', reason: stored.reason } }
+    const { id } = assembled
+    // The id covers the meshes and where they go, not the texture a
+    // layout stated, so the same meshes imported with and without their
+    // layout.json are one set. A stated texture outranks an unstated one:
+    // the meshes were exported with one rotation, and an import that
+    // does not say what it was cannot un-say it.
+    const stated = assembled.set.texture === null ? this.warpStore.read(id) : null
+    const set = stated?.ok && stated.set.texture !== null ? stated.set : assembled.set
+    if (set === assembled.set) {
+      const stored = this.warpStore.write(id, set, new Date(this.nowMs()).toISOString())
+      if (!stored.ok) return { ok: false, refusal: { code: 'storage', reason: stored.reason } }
+    }
     const previous = record.warpRef
-    record.warpRef = assembled.id
-    record.render = { ...record.render, warp: wireWarpSet(assembled.id, assembled.set) }
+    record.warpRef = id
     this.persist()
-    if (previous !== assembled.id) this.releaseWarp(previous)
-    if (record.ready) await this.emit(record, record.render, OUTPUT_RENDER_CONFIG_EVENT)
-    return { ok: true, id: assembled.id, meshes: assembled.set.meshes.length }
+    if (previous !== id) this.releaseWarp(previous)
+    // Every output naming this set gets it as now stored, not only this
+    // one. Otherwise another row drawing the same meshes would state a
+    // different rotation from this one until the next launch. Its
+    // geometry is unchanged, and the output compares the id and rebuilds
+    // nothing.
+    for (const holder of this.records.values()) {
+      if (holder.warpRef !== id) continue
+      holder.render = { ...holder.render, warp: wireWarpSet(id, set) }
+      if (holder.ready) await this.emit(holder, holder.render, OUTPUT_RENDER_CONFIG_EVENT)
+    }
+    return { ok: true, id, meshes: set.meshes.length }
   }
 
   /**
@@ -1051,9 +1070,11 @@ export class MultiOutputManager {
     for (const record of adopted) {
       // Re-read rather than trusting the captured object: a window can
       // have departed on its own during the wait, in which case
-      // `commitDeparture` has already dealt with it.
+      // `commitDeparture` has already dealt with it. One that answered
+      // as a different geometry is already being closed by the event
+      // handler, and it did answer, so it must not be reported silent.
       const current = this.records.get(record.label)
-      if (!current) continue
+      if (!current || current.departing) continue
       if (current.ready) {
         live.push(current)
         // The failure being reported is case 3's, because that is what
@@ -1537,6 +1558,30 @@ export class MultiOutputManager {
     const record = this.records.get(event.label)
     if (!record) return
 
+    // A window that booted as a different geometry from its record is
+    // closed, never driven. A projector-warp output driven as the other
+    // mode would put an unwarped globe across projectors calibrated for
+    // a warp, and that picture looks as though it worked. Not serving it
+    // is not enough: an output nobody drives still renders its own idle
+    // Earth. The spawn URL and the record come from one call, so this
+    // should never run; the reachable way in is adoption, where the
+    // record is read from the stored config and the mode from a window
+    // that outlived the page that wrote it.
+    //
+    // The removal is not persisted and not reported. The configuration
+    // is not what is wrong, so the next restore spawns the output again
+    // from the right URL. And no removal reason in the telemetry schema
+    // is true of a build disagreeing with itself, so the error log is
+    // the signal.
+    if (event.type === 'output_ready' && event.mode !== record.mode) {
+      logger.error(
+        `[multiOutput] ${event.label} announced '${event.mode}' but was spawned as '${record.mode}' — ` +
+          'closing it rather than driving it as a geometry it is not',
+      )
+      void this.discard(event.label, null).then(() => this.notifyChange())
+      return
+    }
+
     record.lastEvent = event
     if (event.type === 'output_closing') {
       // Held on its own field rather than read back off `lastEvent`,
@@ -1599,23 +1644,23 @@ export class MultiOutputManager {
     // the config-before-state ordering below is load-bearing, so a
     // second copy of it is a second place for it to drift.
     //
-    // Serving a ping is also how an output recovers when its
+    // Answering a ping is also how an output recovers when its
     // `output_ready` was missed: a manager restart, or the
     // spawn-ordering race, would otherwise leave it un-served for the
     // life of the window. And a resync is the right reply rather than
     // a bare acknowledgement — whatever cost it the heartbeat may have
     // cost it a diff, and a full snapshot is the same round trip.
-    if (event.type === 'output_ready' || event.type === 'output_health_check') {
-      // Served regardless, because the output drops a view arm that is
-      // not its own and keeps everything else — but said, because a
-      // window announcing a different geometry from the URL it was
-      // spawned with means the two ends of this build disagree about
-      // what a URL says, which nothing else would surface.
-      if (event.type === 'output_ready' && event.mode !== record.mode) {
-        logger.error(
-          `[multiOutput] ${event.label} announced '${event.mode}' but was spawned as '${record.mode}'`,
-        )
-      }
+    //
+    // But a ping does not say what geometry the window is, so one from
+    // a window that has never announced is answered with the reattach
+    // poke rather than served. The window replies with an
+    // `output_ready`, which carries the mode checked above. `ready`
+    // therefore means the window has said it is the geometry its record
+    // is, and nothing is sent to one that has not. The recovery costs
+    // one more round trip.
+    if (event.type === 'output_health_check' && !record.ready) {
+      void this.emit(record, {}, OUTPUT_REATTACH_EVENT)
+    } else if (event.type === 'output_ready' || event.type === 'output_health_check') {
       record.ready = true
       // Config first. A restored 8K output that received its state
       // before its resolution would render one or more frames at the

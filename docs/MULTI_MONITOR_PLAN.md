@@ -3815,9 +3815,15 @@ checklist, which is what they were built for.
   watching the compile fail. Telemetry's bucket switch is a fourth
   guard of the same kind.
 - **Two things the chapter did not ask for.**
-  - A window announcing a different geometry from the URL it was
-    spawned with is logged by the manager and still served. Until there
-    were two modes the manager had nothing to compare.
+  - A window announcing a different geometry from its record's is
+    closed rather than driven. Until there were two modes the manager
+    had nothing to compare. This first shipped as logged and still
+    served, and review caught it: a projector-warp output driven as
+    `sos-equirect` puts an unwarped globe across the projectors, and
+    not serving it is not enough, since an undriven output draws its
+    own idle Earth. A ping carries no mode, so one from a window that
+    has never announced now gets the reattach poke rather than a serve.
+    The close keeps the configuration and reports no removal.
   - `output_added` reports a `projector-warp` window's framebuffer as
     `native`. That window draws projector rasters rather than an
     equirect frame, so no rung on the ladder describes it, and
