@@ -36,7 +36,7 @@ import {
   type OutputRenderConfig,
   type OutputStateMessage,
 } from './protocol'
-import { createWarpSetStore, type WarpSetStore, type WarpStorageLike } from './warpStorage'
+import { createWarpSetStore, WARP_SET_KEY_PREFIX, type WarpSetStore, type WarpStorageLike } from './warpStorage'
 import { readWarpSources, warpSetId, type WarpSource } from './warpImport'
 import {
   MultiOutputManager,
@@ -2632,6 +2632,48 @@ describe('warp sets (rung 16)', () => {
 
     expect(configEmits(fake.emitted)[0].config.warp).toBeNull()
     expect(store.current().outputs[0].warpId).toBe(missing)
+    warn.mockRestore()
+  })
+
+  it('costs a damaged set the one output using it, and restores its neighbour untouched', async () => {
+    // Appendix B's W9(b) with no sphere: one key per set is what makes
+    // this true, since no restore ever reads two sets in one parse.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const storage = memoryWarpStorage()
+    const warpStore = createWarpSetStore(storage)
+    const P3 = { x: 0, y: 0.5, w: 0.5, h: 0.5 }
+    const good = warpSetId([{ id: 'P3', viewport: P3, text: MESH }])
+    const damaged = warpSetId([{ id: 'P3', viewport: P3, text: OTHER }])
+    warpStore.write(good, { layoutFrom: 'sos-quadrants', meshes: [{ id: 'P3', viewport: P3, text: MESH, sourceName: 'P3.data' }] }, 'x')
+    warpStore.write(damaged, { layoutFrom: 'sos-quadrants', meshes: [{ id: 'P3', viewport: P3, text: OTHER, sourceName: 'P3.data' }] }, 'x')
+    // One byte changed after the write, the way a hand edit or a bad
+    // sector would: still JSON, still a plausible mesh, a different set.
+    const key = `${WARP_SET_KEY_PREFIX}${damaged}`
+    storage.map.set(key, storage.map.get(key)!.replace('0.3 0.75', '0.4 0.75'))
+    const fake = createFakeHost()
+    const store = memoryStore({
+      autoRestoreOnLaunch: true,
+      outputs: [
+        { ...persistedOn('output-1', MONITORS[0]), mode: 'projector-warp', warpId: damaged },
+        { ...persistedOn('output-2', MONITORS[1]), mode: 'projector-warp', warpId: good },
+      ],
+    })
+    const manager = makeManager(fake.host, { warpStore, store })
+
+    await manager.restoreOutputs()
+    fake.send(ready('output-1', 'projector-warp'))
+    fake.send(ready('output-2', 'projector-warp'))
+
+    const sent = new Map(configEmits(fake.emitted).map(e => [e.label, e.config]))
+    expect(sent.get('output-1')?.warp).toBeNull()
+    expect(sent.get('output-2')?.warp?.id).toBe(good)
+    // Both still configured, both still naming their sets: the damaged
+    // one is the operator's to re-import, never the restore's to forget.
+    expect(store.current().outputs.map(o => [o.label, o.warpId])).toEqual([
+      ['output-1', damaged],
+      ['output-2', good],
+    ])
+    expect(warn.mock.calls.some(call => String(call[0]).includes('altered'))).toBe(true)
     warn.mockRestore()
   })
 
