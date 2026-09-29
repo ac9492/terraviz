@@ -64,10 +64,19 @@ function pick(section: HTMLElement, names: string[]): void {
 
 let repaint: ReturnType<typeof vi.fn>
 beforeEach(() => {
-  document.body.replaceChildren()
+  // The app-wide announcer lives outside the panel in the real page, so
+  // it survives the repaint that follows an import or a clear.
+  document.body.innerHTML = '<div id="a11y-announcer" aria-live="polite" aria-atomic="true"></div>'
   repaint = vi.fn()
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
+
+/** Unmount what a test mounted, keeping the announcer. */
+function resetBody(): void {
+  for (const el of [...document.body.children]) if (el.id !== 'a11y-announcer') el.remove()
+}
+
+const announced = (): string => document.getElementById('a11y-announcer')!.textContent ?? ''
 
 function mountSection(over: Partial<OutputRecord> = {}, mgr = fakeManager()) {
   const section = buildWarpSection(mgr.mgr, record(over), MONITOR, 'PROJECTORS', repaint as () => void)
@@ -121,12 +130,12 @@ describe('describeWarpRefusal', () => {
 describe('buildWarpSection', () => {
   it('says what the output is drawing — or why nothing', () => {
     expect(mountSection().section.querySelector('.output-warp-status')!.textContent).toContain('No warp set')
-    document.body.replaceChildren()
+    resetBody()
     // A reference with nothing loaded is a stored set that could not be read.
     expect(mountSection({ warpRef: 'feedfacecafebeef' }).section.querySelector('.output-warp-status')!.textContent).toContain(
       'could not be read',
     )
-    document.body.replaceChildren()
+    resetBody()
     const warp = {
       id: '0123456789abcdef',
       meshes: [
@@ -153,6 +162,38 @@ describe('buildWarpSection', () => {
     section.querySelector<HTMLButtonElement>('.output-warp-choose')!.click()
     await until(() => repaint.mock.calls.length > 0, 'the repaint')
     expect(raw.importWarpSet).toHaveBeenCalledWith('output-1', expect.any(Array), 'sos-quadrants')
+  })
+
+  it('puts what arrives after a read in a polite live region that was there first', async () => {
+    const { section } = mountSection()
+    const region = section.querySelector('.output-warp-pending')!
+    // Registered empty, before anything changes it — a region born with
+    // its content is never announced.
+    expect(region.getAttribute('role')).toBe('status')
+    expect(region.getAttribute('aria-live')).toBe('polite')
+    expect(region.childElementCount).toBe(0)
+
+    pick(section, ['sphere-sim-files.zip'])
+    await until(() => section.querySelector('.output-warp-choose') !== null, 'the layout question')
+
+    expect(region.contains(section.querySelector('.output-warp-choose'))).toBe(true)
+    expect(region.textContent).toContain('Place them in Science On a Sphere')
+  })
+
+  it('announces an import and a clear, which repaint the region away', async () => {
+    const { section } = mountSection()
+    pick(section, ['sphere-sim-files.zip'])
+    await until(() => section.querySelector('.output-warp-choose') !== null, 'the layout question')
+    section.querySelector<HTMLButtonElement>('.output-warp-choose')!.click()
+    await until(() => announced() !== '', 'the import announcement')
+    expect(announced()).toBe('Drawing 2 meshes: P1, P3.')
+
+    resetBody()
+    document.getElementById('a11y-announcer')!.textContent = ''
+    const cleared = mountSection({ warpRef: 'feedfacecafebeef' }).section
+    cleared.querySelector<HTMLButtonElement>('.output-warp-clear')!.click()
+    await until(() => announced() !== '', 'the clear announcement')
+    expect(announced()).toContain('No warp set')
   })
 
   it('imports nothing when the operator declines', async () => {
@@ -194,7 +235,7 @@ describe('buildWarpSection', () => {
 
   it('clears the warp, and only offers to when there is one', async () => {
     expect(mountSection().section.querySelector<HTMLButtonElement>('.output-warp-clear')!.disabled).toBe(true)
-    document.body.replaceChildren()
+    resetBody()
     const { section, raw } = mountSection({ warpRef: 'feedfacecafebeef' })
     const clear = section.querySelector<HTMLButtonElement>('.output-warp-clear')!
     expect(clear.disabled).toBe(false)

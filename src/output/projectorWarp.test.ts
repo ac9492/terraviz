@@ -115,15 +115,26 @@ describe('parseWarpMesh', () => {
   })
 
   it('treats either of the format’s no-data markers as enough on its own', () => {
+    // Three columns, so the three drawable nodes on the right still make
+    // one triangle and the mesh draws something.
     const mesh = parsed(
-      ['2', '2 2', '-1 1 -1 -1 -1', '1 1 0 0 -1', '-1 -1 1.5 0.5 1', '1 -1 0.5 0.5 0.5'].join('\n'),
+      [
+        '2',
+        '3 2',
+        '-1 1 -1 -1 -1',
+        '0 1 0 0 -1',
+        '1 1 0.6 0.5 1',
+        '-1 -1 1.5 0.5 1',
+        '0 -1 0.5 0.5 0.5',
+        '1 -1 0.6 0.4 1',
+      ].join('\n'),
     )
     // Both markers; a valid texel with a negative weight; a texel off the texture.
-    expect(mesh.nodes.map((n) => n.drawable)).toEqual([false, false, false, true])
+    expect(mesh.nodes.map((n) => n.drawable)).toEqual([false, false, true, false, true, true])
     // A node that draws nothing carries nothing a caller could draw by mistake.
     expect(mesh.nodes[1]).toMatchObject({ weight: 0 })
     expect(mesh.nodes[1].u).toBeNaN()
-    expect(mesh.nodes[3]).toMatchObject({ u: 0.5, v: 0.5, weight: 0.5 })
+    expect(mesh.nodes[4]).toMatchObject({ u: 0.5, v: 0.5, weight: 0.5 })
   })
 
   it('reads CRLF, a byte-order mark and blank lines the same as clean text', () => {
@@ -212,6 +223,32 @@ describe('parseWarpMesh', () => {
     it('a mesh in which nothing reaches the surface', () => {
       expect(refusalOf(gridText(3, 3, () => null)).code).toBe('nothing-drawable')
     })
+
+    it('a mesh whose drawable nodes never meet three to a cell', () => {
+      // One node alone, and a checkerboard: every cell has at most two
+      // corners on the surface, so the build would draw no triangle.
+      const lone = gridText(2, 2, (i, j) => (i === 1 && j === 1 ? smooth(i, j) : null))
+      const checker = gridText(3, 3, (i, j) => ((i + j) % 2 === 0 ? smooth(i, j) : null))
+      for (const text of [lone, checker]) expect(refusalOf(text).code).toBe('nothing-drawable')
+    })
+
+    it('a mesh whose triangles all weigh 0', () => {
+      expect(refusalOf(gridText(3, 3, (i, j) => [smooth(i, j)[0], smooth(i, j)[1], 0])).code).toBe('unlit')
+      // The one positive weight sits on a node no complete triangle
+      // reaches, so nothing drawn can carry it.
+      const isolated = gridText(3, 3, (i, j) => {
+        if ((i === 1 && j === 2) || (i === 2 && j === 1)) return null
+        return [smooth(i, j)[0], smooth(i, j)[1], i === 2 && j === 2 ? 1 : 0]
+      })
+      expect(refusalOf(isolated).code).toBe('unlit')
+    })
+  })
+
+  it('draws a triangle lit at a single corner — the weight is interpolated', () => {
+    const oneCorner = gridText(2, 2, (i, j) => [smooth(i, j)[0], smooth(i, j)[1], i === 0 && j === 0 ? 0.5 : 0])
+    const g = buildWarpGeometry([{ mesh: parsed(oneCorner), viewport: FULL }])
+    expect(g.meshes[0].triangles).toBe(2)
+    expect(Math.max(...g.weights)).toBe(0.5)
   })
 })
 

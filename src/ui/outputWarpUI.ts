@@ -39,6 +39,7 @@ import type { OutputMonitor, OutputRecord, WarpAssignRefusal, WarpAssignment, Wa
 import type { OutputRenderConfig } from '../services/multiOutput/protocol'
 import type { WarpLayoutSource, WarpSource, WarpSourcesResult } from '../services/multiOutput/warpImport'
 import { logger } from '../utils/logger'
+import { announcePolite } from './domUtils'
 
 /** The slice of the manager the warp controls call. */
 export interface OutputWarpManager {
@@ -227,9 +228,18 @@ export function buildWarpSection(
   actions.append(importBtn, clearBtn, input)
   section.appendChild(actions)
 
-  /** Where a refusal or the layout question goes — replaced, never stacked. */
+  /**
+   * Where a refusal or the layout question goes — replaced, never stacked.
+   * A polite live region, the treatment the app gives every message that
+   * arrives after an await: everything that lands here does, away from
+   * where focus is, so without it the question an import waits on would
+   * appear in silence to anyone not looking at it. Created empty, so the
+   * region is registered before the first message changes it.
+   */
   const pending = document.createElement('div')
   pending.className = 'output-warp-pending'
+  pending.setAttribute('role', 'status')
+  pending.setAttribute('aria-live', 'polite')
   section.appendChild(pending)
   const show = (...children: HTMLElement[]): void => pending.replaceChildren(...children)
 
@@ -296,8 +306,17 @@ export function buildWarpSection(
       void mgr
         .importWarpSet(record.label, sources, 'sos-quadrants')
         .then(result => {
-          if (result.ok) repaint()
-          else show(paragraph(describeWarpRefusal(result.refusal), 'output-error'))
+          if (!result.ok) {
+            show(paragraph(describeWarpRefusal(result.refusal), 'output-error'))
+            return
+          }
+          // Said through the app-wide announcer rather than `pending`: the
+          // repaint replaces this whole section, region included, and a
+          // region swapped out with its content announces nothing.
+          announcePolite(
+            plural(sources.length, { one: 'outputs.warp.loaded.one', other: 'outputs.warp.loaded.other' }, { ids: ids.join(', ') }),
+          )
+          repaint()
         })
         .catch(err => {
           logger.warn('[outputUI] importing a warp set failed:', err)
@@ -316,7 +335,10 @@ export function buildWarpSection(
     clearBtn.disabled = true
     void mgr
       .clearOutputWarp(record.label)
-      .then(repaint)
+      .then(() => {
+        announcePolite(t('outputs.warp.none'))
+        repaint()
+      })
       .catch(err => {
         logger.warn('[outputUI] clearing a warp failed:', err)
         clearBtn.disabled = false

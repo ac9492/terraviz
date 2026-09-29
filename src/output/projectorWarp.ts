@@ -130,8 +130,13 @@ export type WarpRefusalCode =
   | 'not-a-grid'
   /** A raster span other than the format's ±aspect by ±1. */
   | 'bad-extent'
-  /** Every node reaches nothing: the file would draw a black projector. */
+  /**
+   * No triangle reaches the surface — no node does, or none meet three to
+   * a cell — so the file would draw a black projector.
+   */
   | 'nothing-drawable'
+  /** Triangles reach the surface, but every corner of every one weighs 0: a black projector again. */
+  | 'unlit'
 
 export interface WarpRefusal {
   readonly code: WarpRefusalCode
@@ -284,8 +289,63 @@ export function parseWarpMesh(text: string): WarpParseResult {
   if (drawableCount === 0) {
     return refuse('nothing-drawable', 'no node reaches the surface')
   }
+  // Reaching the surface is a property of a node, drawing one of a
+  // triangle: the build keeps a triangle only when all three corners
+  // reach the surface. So a mesh whose drawable nodes never meet three to
+  // a cell draws nothing, and one whose triangles all weigh 0 draws black.
+  // Either would read on the sphere as a dead lamp rather than a refused
+  // file, which is the confusion this parse exists to prevent.
+  const light = meshLight(cols, rows, nodes)
+  if (light === 'none') {
+    return refuse('nothing-drawable', 'no three neighbouring nodes reach the surface, so no triangle is drawn')
+  }
+  if (light === 'unlit') {
+    return refuse('unlit', 'every triangle that reaches the surface weighs 0, so the projector would emit nothing')
+  }
 
   return { ok: true, mesh: { cols, rows, aspect, nodes } }
+}
+
+type Tri = [number, number, number]
+
+/**
+ * The two triangles a grid cell is drawn as, by node index. One
+ * definition for the build and the parse, so that "this mesh draws
+ * something" is asked of the triangles the build will actually draw.
+ */
+function cellTriangles(cols: number, i: number, j: number): [Tri, Tri] {
+  const a = j * cols + i
+  const b = a + 1
+  const c = a + cols
+  const d = c + 1
+  return [
+    [a, b, c],
+    [b, d, c],
+  ]
+}
+
+/**
+ * Whether any triangle the build would keep can emit light: `lit` once
+ * one has three drawable corners and a positive weight at one of them —
+ * the weight is interpolated, so one corner is enough — `unlit` when
+ * complete triangles exist but all weigh 0, `none` when none exist.
+ *
+ * The wide-triangle drop is not consulted. It keeps every triangle no
+ * wider than the median, so it never empties a mesh, and a lit triangle
+ * it does drop is counted on the HUD rather than lost silently.
+ */
+function meshLight(cols: number, rows: number, nodes: readonly WarpNode[]): 'lit' | 'unlit' | 'none' {
+  let found: 'unlit' | 'none' = 'none'
+  for (let j = 0; j < rows - 1; j++) {
+    for (let i = 0; i < cols - 1; i++) {
+      for (const tri of cellTriangles(cols, i, j)) {
+        if (!tri.every((k) => nodes[k].drawable)) continue
+        if (tri.some((k) => nodes[k].weight > 0)) return 'lit'
+        found = 'unlit'
+      }
+    }
+  }
+  return found
 }
 
 /** A mesh's share of the framebuffer, as fractions with the origin at bottom-left. */
@@ -419,7 +479,6 @@ function assertViewport(viewport: WarpViewport, index: number): void {
  * bug upstream rather than something an operator did.
  */
 export function buildWarpGeometry(placed: readonly PlacedWarpMesh[]): WarpGeometry {
-  type Tri = [number, number, number]
   const perMesh = placed.map(({ mesh, viewport }, index) => {
     assertViewport(viewport, index)
     const { cols, rows, nodes } = mesh
@@ -428,11 +487,7 @@ export function buildWarpGeometry(placed: readonly PlacedWarpMesh[]): WarpGeomet
     let droppedNoData = 0
     for (let j = 0; j < rows - 1; j++) {
       for (let i = 0; i < cols - 1; i++) {
-        const a = j * cols + i
-        const b = a + 1
-        const c = a + cols
-        const d = c + 1
-        for (const tri of [[a, b, c], [b, d, c]] as Tri[]) {
+        for (const tri of cellTriangles(cols, i, j)) {
           const [p, q, r] = tri.map((k) => dirs[k])
           if (p === null || q === null || r === null) {
             droppedNoData++

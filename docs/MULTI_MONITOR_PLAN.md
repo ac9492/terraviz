@@ -3749,7 +3749,13 @@ correctness lives in it:
 - a triangle wider than any real cell dropped and counted (below);
 - `x` divided by the file's own aspect, then each mesh mapped into its
   viewport's clip-space rect;
-- `i` a per-vertex attribute, interpolated like the direction.
+- `i` a per-vertex attribute, interpolated like the direction;
+- a mesh that would draw nothing refused at the parse (added
+  2026-09-29, from review): one whose drawable nodes never meet three
+  to a cell, and one whose complete triangles all weigh 0. Both used to
+  parse and draw black, which reads on the sphere as a dead lamp rather
+  than a refused file. The parse asks the question of the triangles the
+  build keeps, through the same cell split.
 
 It needs no GL, no DOM and no Three, so every rule above is a unit
 test.
