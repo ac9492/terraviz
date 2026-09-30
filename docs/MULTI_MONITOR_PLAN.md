@@ -4207,10 +4207,15 @@ zero over its last quarter, where the light arrives edge-on anyway.
 Measured per pixel against sphere-sim's trace over seven rigs — Boulder
 as designed and as built, SOS's nominal rig with four, three and two
 projectors, a placed pair and a lone placed projector — that rule was
-within 1.5 times of the best alternative on every SOS rig and 4 to 18
-times better than the staircase on all seven, on the squared weight
-error weighted by incidence, which is how an error shows on the
-sphere.
+within 1.5 times of the best alternative on each of SOS's nominal rigs
+and 4 to 18 times better than the staircase on all seven, on the
+squared weight error weighted by incidence, which is how an error
+shows on the sphere. Boulder is where it gives something up. Its blend
+hands each side over before the edge, and fading to zero across the
+band scores better there: 1.10 against 1.30 as designed and 1.07
+against 1.81 as built, with the zero line below applied to both, where
+the staircase scores 6.35 and 8.04. On the other five rigs fading is
+1.6 to 4.5 times worse.
 
 **The blend's own zero line is reconstructed too.** On a rig like
 Boulder the silhouette is not the edge anyone sees. Its blend gives
