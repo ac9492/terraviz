@@ -53,6 +53,14 @@
  * a stride through the interior. Each is sphere-sim's answer, not ours:
  * `pixelToRay`, the intersection, `worldLonToTextureLon`, `coordToUv`.
  *
+ * And the silhouette itself, which a mesh cannot state and the module
+ * reconstructs: for every grid edge from a node that reaches the surface
+ * to one that does not, where along it the tracer's rays stop hitting,
+ * found by bisection; and the traced texel and blend weight — the
+ * exporter's own `coverageAndWeights` times its polar mask — on a 4×4
+ * lattice in every cell the silhouette crosses, kept only where a player
+ * drawing complete triangles alone leaves black.
+ *
  * Also printed, not written: the same interpolation error measured with
  * this script's own arithmetic, independent of `projectorWarp`, per ring.
  * Those are the numbers the test's tolerances come from — setting them
@@ -68,11 +76,12 @@ type V3 = [number, number, number]
 
 interface SphereSimNode { x: number; y: number; u: number; v: number; intensity: number }
 interface SphereSimExport { projectorId: string; cols: number; rows: number; nodes: SphereSimNode[] }
-interface Hit { point: unknown; location: unknown }
+interface Hit { point: unknown; normal: unknown; location: unknown }
 // The slice of sphere-sim's types this script touches, declared locally so
 // it does not need that repository's type graph to run.
 interface SphereSimRig {
   rotationOffsetDeg: number
+  blend: unknown
   surface: {
     intersect(lens: unknown, ray: unknown): Hit | null
     coordAt(point: unknown, location: unknown): { latDeg: number; lonDeg: number }
@@ -149,6 +158,10 @@ async function main(): Promise<void> {
   const { blendModelApplies } = await load<{ blendModelApplies(s: unknown): boolean }>(
     'packages/sim/src/surface.ts',
   )
+  const { coverageAndWeights, polarMask } = await load<{
+    coverageAndWeights(point: unknown, normal: unknown, rig: SphereSimRig, at?: unknown): { weights: number[] }
+    polarMask(latDeg: number, blend: unknown, interpretation: 'latitude'): number
+  }>('packages/sim/src/coverage.ts')
   const { SOS_QUADRANT_VIEWPORTS } = await load<{
     SOS_QUADRANT_VIEWPORTS: readonly { x: number; y: number; w: number; h: number }[]
   }>('packages/sim/src/scene.ts')
@@ -166,6 +179,28 @@ async function main(): Promise<void> {
     return [tex.u, 1 - tex.v]
   }
 
+  /**
+   * `truth`, plus the blend weight sphere-sim's exporter would write for
+   * the same ray — its `coverageAndWeights` share times the polar mask, as
+   * `buildWarpExport` computes a node's intensity.
+   */
+  function traced(rig: SphereSimRig, index: number, px: number, py: number): [number, number, number] | null {
+    const tex = truth(rig, index, px, py)
+    if (tex === null) return null
+    const p = rig.projectors[index]
+    const hit = rig.surface.intersect(p.lens, pixelToRay(p, px, py)) as Hit
+    const coord = rig.surface.coordAt(hit.point, hit.location)
+    const mask = blendModelApplies(rig.surface) ? polarMask(coord.latDeg, rig.blend, 'latitude') : 1
+    return [tex[0], tex[1], coverageAndWeights(hit.point, hit.normal, rig, hit.location).weights[index] * mask]
+  }
+
+  function insideTriangle(t: [number, number][], x: number, y: number): boolean {
+    const det = (t[1][1] - t[2][1]) * (t[0][0] - t[2][0]) + (t[2][0] - t[1][0]) * (t[0][1] - t[2][1])
+    const l0 = ((t[1][1] - t[2][1]) * (x - t[2][0]) + (t[2][0] - t[1][0]) * (y - t[2][1])) / det
+    const l1 = ((t[2][1] - t[0][1]) * (x - t[2][0]) + (t[0][0] - t[2][0]) * (y - t[2][1])) / det
+    return l0 >= 0 && l1 >= 0 && 1 - l0 - l1 >= 0
+  }
+
   const rigs: {
     name: string
     file: string
@@ -173,6 +208,8 @@ async function main(): Promise<void> {
     resX: number
     resY: number
     samples: number[][]
+    silhouette: number[][]
+    band: number[][]
   }[] = []
 
   const cases: { name: string; rig: SphereSimRig; projectorId: string }[] = [
@@ -276,7 +313,50 @@ async function main(): Promise<void> {
       }
     }
 
-    rigs.push({ name, file, projectorId, resX, resY, samples })
+    // The silhouette, as the header describes: each edge's crossing as a
+    // fraction of it from the good node, then the band's traced samples.
+    const silhouette: number[][] = []
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
+        if (!valid(at(i, j))) continue
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const [bi, bj] = [i + di, j + dj]
+          if (bi < 0 || bj < 0 || bi >= cols || bj >= rows || valid(at(bi, bj))) continue
+          const [ax, ay] = pixelOf(i, j)
+          const [bx, by] = pixelOf(bi, bj)
+          let lo = 0
+          let hi = 1
+          for (let k = 0; k < 40; k++) {
+            const m = (lo + hi) / 2
+            if (truth(rig, index, ax + (bx - ax) * m, ay + (by - ay) * m) !== null) lo = m
+            else hi = m
+          }
+          silhouette.push([i, j, di, dj, round(lo, 5)])
+        }
+      }
+    }
+    const band: number[][] = []
+    for (let j = 0; j < rows - 1; j++) {
+      for (let i = 0; i < cols - 1; i++) {
+        const good = ([[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]] as [number, number][]).filter(([ci, cj]) =>
+          valid(at(ci, cj)),
+        )
+        if (good.length === 0 || good.length === 4) continue
+        // Three good corners' triangle is drawn by any player; fewer, nothing.
+        const drawn = good.length === 3 ? good.map(([ci, cj]) => pixelOf(ci, cj)) : null
+        for (let b = 0; b < 4; b++) {
+          for (let a = 0; a < 4; a++) {
+            const x = ((i + (a + 0.5) / 4) / (cols - 1)) * resX
+            const y = ((j + (b + 0.5) / 4) / (rows - 1)) * resY
+            if (drawn !== null && insideTriangle(drawn, x, y)) continue
+            const t = traced(rig, index, x, y)
+            if (t !== null) band.push([round(x, 3), round(y, 3), round(t[0], 7), round(t[1], 7), round(t[2], 5)])
+          }
+        }
+      }
+    }
+
+    rigs.push({ name, file, projectorId, resX, resY, samples, silhouette, band })
     const summary = (a: number[]): string => {
       const s = [...a].sort((p, q) => p - q)
       return s.length === 0
@@ -290,6 +370,12 @@ async function main(): Promise<void> {
     }
     console.log(`  seam triangles: directions ${summary(seamErrors)} | unwrapped (u, v) ${summary(naiveSeam)}`)
     console.log(`  pole triangles: directions ${summary(poleErrors)} | unwrapped (u, v) ${summary(naivePole)}`)
+    const past = silhouette.map((e) => e[4]).sort((p, q) => p - q)
+    const light = band.reduce((sum, b) => sum + b[4], 0)
+    console.log(
+      `  silhouette: ${silhouette.length} edges, a median ${past[past.length >> 1].toFixed(2)} of a cell past the last node;` +
+        ` ${band.length} band samples a staircase leaves black, weight sum ${light.toFixed(1)}`,
+    )
   }
 
   // Convention 3: a sphere rig's mechanical rotation is baked into `u`
@@ -334,7 +420,12 @@ async function main(): Promise<void> {
       note:
         'Meshes are formatWarpMesh output; samples are [px, py, u, v] with px/py raster ' +
         'pixels (y down, corner-to-corner as buildWarpExport spaces its nodes) and u/v the ' +
-        "texel sphere-sim's tracer puts there, v up. Regenerate rather than edit.",
+        "texel sphere-sim's tracer puts there, v up. silhouette is [i, j, di, dj, t]: the " +
+        'grid edge from node (i, j), which reaches the surface, to its neighbour (i + di, ' +
+        "j + dj), which does not, and t the fraction of it at which the tracer's rays stop " +
+        'hitting. band is [px, py, u, v, w] at points in the cells the silhouette crosses ' +
+        'that complete triangles leave black, w the weight the exporter would write there. ' +
+        'Regenerate rather than edit.',
     },
     sosQuadrantViewports: SOS_QUADRANT_VIEWPORTS.map((vp, i) => ({ id: `P${i + 1}`, ...vp })),
     rigs,
@@ -350,10 +441,12 @@ async function main(): Promise<void> {
   }
   // One sample per line: pretty-printing puts every number on its own line
   // and triples the file for nothing a reviewer reads.
-  const json = JSON.stringify(parity, null, 1).replace(
-    /\[\n\s+(-?[\d.]+),\n\s+(-?[\d.]+),\n\s+(-?[\d.]+),\n\s+(-?[\d.]+)\n\s+\]/g,
-    '[$1, $2, $3, $4]',
-  )
+  const json = JSON.stringify(parity, null, 1)
+    .replace(
+      /\[\n\s+(-?[\d.]+),\n\s+(-?[\d.]+),\n\s+(-?[\d.]+),\n\s+(-?[\d.]+),\n\s+(-?[\d.]+)\n\s+\]/g,
+      '[$1, $2, $3, $4, $5]',
+    )
+    .replace(/\[\n\s+(-?[\d.]+),\n\s+(-?[\d.]+),\n\s+(-?[\d.]+),\n\s+(-?[\d.]+)\n\s+\]/g, '[$1, $2, $3, $4]')
   writeFileSync(join(OUT_DIR, 'parity.json'), `${json}\n`)
 
   // A whole bundle as sphere-sim's page writes one, for the ZIP reader:

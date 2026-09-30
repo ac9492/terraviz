@@ -461,23 +461,35 @@ stated the rotation, and the app does not guess it from the rig.
 
 #### Edges you should expect
 
-Two things will look imperfect and are not faults in this app:
+A warp file describes each projector on a coarse grid, 41×41 by
+default, and says nothing about where between two grid points the
+sphere's edge falls. The app works that out from how the grid bunches
+up near the edge, and draws each projector's picture out to it,
+fading out. Check the edges with the calibration pattern on,
+especially at the top and bottom of each projector's picture: the
+polar regions, which that projector lights alone.
 
-- **Each projector's picture stops short of its edge** by up to one
-  mesh cell: about 48 px on a 1920-wide projector at the default
-  grid. It shows as a stepped outline where that edge carries light,
-  which is at the top and bottom of each projector's picture: the
-  polar regions, which that projector lights alone. At the sides,
-  where projectors overlap, the picture has faded out before its edge
-  and the steps are black on black. sphere-sim's projector preview
-  shows no steps because it traces every pixel; a warp file carries
-  only the grid.
-- **The ring of cells just inside that edge is the least
+What you should see is a curved edge that fades out. What is left over
+is not a fault in this app:
+
+- **A short step where the grid runs along the edge**, at the top,
+  bottom and sides of each projector's picture: the grid gives
+  nothing to go on there, so the picture reaches halfway into that
+  cell of the grid and stops.
+- **An edge a few pixels off**, now and then about 15 px on the
+  Boulder rig's meshes. Where it lands past the sphere, a faint
+  sliver of light can reach the wall behind it.
+- **The ring of grid cells just inside the edge is the least
   accurate.** The graticule can sit a few pixels off across an
   overlap there, up to about 28 px on the Boulder rig's meshes.
 
-Both come from the grid's resolution. If either is objectionable,
+All three come from the grid's resolution. If any is objectionable,
 export again from sphere-sim with a finer grid (`cols` / `rows`).
+
+A **staircase along the whole edge**, up to one grid cell deep, is a
+fault: the edge is not being reconstructed. So is a **bright rim**
+well past the edge. Either one belongs in a bug report with the warp
+file.
 
 #### Restore, and a warp that will not load
 

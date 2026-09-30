@@ -255,7 +255,15 @@ describe('parseWarpMesh', () => {
 describe('buildWarpGeometry', () => {
   it('draws two non-indexed triangles per cell, each vertex carrying all three attributes', () => {
     const g = buildWarpGeometry([{ mesh: parsed(gridText(3, 2, smooth)), viewport: FULL }])
-    expect(g.meshes).toEqual([{ triangles: 4, droppedNoData: 0, droppedWide: 0, medianWidthRad: expect.any(Number) }])
+    expect(g.meshes).toEqual([
+      {
+        triangles: 4,
+        edgeTriangles: 0,
+        silhouette: { edges: 0, byLaw: 0, halfway: 0 },
+        droppedWide: 0,
+        medianWidthRad: expect.any(Number),
+      },
+    ])
     expect(g.vertexCount).toBe(12)
     expect(g.positions).toHaveLength(36)
     expect(g.directions).toHaveLength(36)
@@ -267,9 +275,29 @@ describe('buildWarpGeometry', () => {
     }
   })
 
-  it("drops the triangle touching a no-data node, and not its cell's other one", () => {
+  it("draws a cell missing a corner as its good corners' triangle, then out towards the missing one", () => {
+    // Node (0, 0) reaches nothing. Its cell keeps the triangle of its three
+    // good corners, and the band past that triangle's diagonal reaches
+    // halfway to the missing corner along both edges: these steps are all
+    // alike, so the square-root law has nothing to read.
     const g = buildWarpGeometry([{ mesh: parsed(gridText(3, 3, (i, j) => (i === 0 && j === 0 ? null : smooth(i, j)))), viewport: FULL }])
-    expect(g.meshes[0]).toMatchObject({ triangles: 7, droppedNoData: 1, droppedWide: 0 })
+    expect(g.meshes[0]).toMatchObject({
+      triangles: 13,
+      edgeTriangles: 6,
+      silhouette: { edges: 2, byLaw: 0, halfway: 2 },
+      droppedWide: 0,
+    })
+    // In clip space the cell is x in [-1, 0], y in [0, 1], missing (-1, 1).
+    // The good corners' triangle is below its diagonal x - y = -1, and the
+    // band runs out to the line through the two halfway points, x - y = -1.5.
+    expect(sampleWarpGeometry(g, -0.3, 0.3)).not.toBeNull()
+    const band = sampleWarpGeometry(g, -0.55, 0.75)!
+    expect(band).not.toBeNull()
+    expect(sampleWarpGeometry(g, -0.9, 0.9)).toBeNull()
+    // Held at the good corners' weight — the nodes' trend is flat — through
+    // three quarters of the band, then faded out over the last strip.
+    expect(band.weight).toBeCloseTo(1, 6)
+    expect(sampleWarpGeometry(g, -0.748, 0.75)!.weight).toBeLessThan(0.05)
   })
 
   it('draws the triangle of an edge cell\'s three good corners, whichever corner is missing', () => {
@@ -279,7 +307,9 @@ describe('buildWarpGeometry', () => {
     for (const [name, [mi, mj]] of Object.entries(corners)) {
       const mesh = parsed(gridText(2, 2, (i, j) => (i === mi && j === mj ? null : smooth(i, j))))
       const g = buildWarpGeometry([{ mesh, viewport: FULL }])
-      expect(g.meshes[0], name).toMatchObject({ triangles: 1, droppedNoData: 1 })
+      // No node lies behind either good corner on a 2×2 grid, so the edge
+      // is not extended: the triangle is all that is drawn.
+      expect(g.meshes[0], name).toMatchObject({ triangles: 1, edgeTriangles: 0, silhouette: { edges: 2, byLaw: 0, halfway: 0 } })
       // The drawn triangle is the three good corners: half the cell, on
       // the side away from the missing one.
       const far = { a: [0.5, -0.5], b: [-0.5, -0.5], c: [0.5, 0.5], d: [-0.5, 0.5] }[name]!
@@ -294,7 +324,7 @@ describe('buildWarpGeometry', () => {
     // diagonals, and reads 0 split along b–c but 1 along a–d.
     const mesh = parsed(gridText(2, 2, (i, j) => [0.45 + 0.02 * i, 0.55 - 0.02 * j, i === j ? 1 : 0]))
     const g = buildWarpGeometry([{ mesh, viewport: FULL }])
-    expect(g.meshes[0]).toMatchObject({ triangles: 2, droppedNoData: 0 })
+    expect(g.meshes[0]).toMatchObject({ triangles: 2, edgeTriangles: 0 })
     expect(sampleWarpGeometry(g, 0, 0)!.weight).toBeCloseTo(0, 6)
   })
 
@@ -335,7 +365,7 @@ describe('buildWarpGeometry', () => {
     // One corner node sent to the far side of the texture: a UV-island straddle.
     const mesh = parsed(gridText(4, 4, (i, j) => (i === 3 && j === 3 ? [0.95, 0.55, 1] : smooth(i, j))))
     const g = buildWarpGeometry([{ mesh, viewport: FULL }])
-    expect(g.meshes[0]).toMatchObject({ triangles: 17, droppedNoData: 0, droppedWide: 1 })
+    expect(g.meshes[0]).toMatchObject({ triangles: 17, edgeTriangles: 0, droppedWide: 1 })
   })
 
   it('winds every triangle counter-clockwise, whichever way the file runs', () => {
@@ -365,8 +395,8 @@ describe('buildWarpGeometry', () => {
       { mesh: a, viewport: SOS_QUADRANT_VIEWPORTS.P1 },
       { mesh: b, viewport: SOS_QUADRANT_VIEWPORTS.P4 },
     ])
-    expect(g.meshes.map((m) => m.triangles)).toEqual([4, 7])
-    expect(g.vertexCount).toBe(33)
+    expect(g.meshes.map((m) => m.triangles)).toEqual([4, 13])
+    expect(g.vertexCount).toBe(51)
     // The first mesh's vertices are all in P1's quadrant, the second's in P4's.
     for (let k = 0; k < g.vertexCount; k++) {
       const [x, y] = [g.positions[k * 3], g.positions[k * 3 + 1]]
@@ -385,6 +415,137 @@ describe('buildWarpGeometry', () => {
     ]) {
       expect(() => buildWarpGeometry([{ mesh, viewport }]), JSON.stringify(viewport)).toThrow(RangeError)
     }
+  })
+})
+
+describe('the reconstructed edge', () => {
+  /**
+   * A 4×3 mesh whose rows run up meridians, so each row is a great circle
+   * and the angle between two of its nodes is exactly the difference of
+   * their latitudes: `lat[i]` for the three drawn columns, then a fourth
+   * column that reaches nothing. Rows sit 0.02 rad of longitude apart.
+   */
+  function meridianRows(lat: readonly number[], weight: readonly number[] = [1, 1, 1]): WarpMesh {
+    return parsed(
+      gridText(4, 3, (i, j) => (i === 3 ? null : [0.5 + (0.02 * j) / (2 * Math.PI), 0.5 + lat[i] / Math.PI, weight[i]])),
+    )
+  }
+  /** A column's clip-space x under `FULL`, from `gridText`'s spacing. */
+  const columnX = (i: number): number => (2 * i) / 3 - 1
+  /** Where a fraction of the way out to an edge `q` cells past column 2 lies. */
+  const bandX = (q: number, f: number): number => columnX(2) + q * f * (columnX(3) - columnX(2))
+  /** The vertices past the last drawn column — the band's — with their latitude. */
+  function bandVertices(g: WarpGeometry): { x: number; lat: number; weight: number }[] {
+    const out: { x: number; lat: number; weight: number }[] = []
+    for (let k = 0; k < g.vertexCount; k++) {
+      const x = g.positions[k * 3]
+      if (x < columnX(2) + 1e-5) continue
+      const [dx, dy, dz] = g.directions.subarray(k * 3, k * 3 + 3)
+      out.push({ x, lat: (directionToWarpUv({ x: dx, y: dy, z: dz }).v - 0.5) * Math.PI, weight: g.weights[k] })
+    }
+    return out
+  }
+  const at = (g: WarpGeometry, x: number) => bandVertices(g).filter((v) => Math.abs(v.x - x) < 1e-5)
+  /** How many triangles hold a point strictly inside them. */
+  function coverCount(g: WarpGeometry, x: number, y: number): number {
+    let n = 0
+    for (let t = 0; t < g.vertexCount; t += 3) {
+      const p = g.positions
+      const [x0, y0, x1, y1, x2, y2] = [p[t * 3], p[t * 3 + 1], p[t * 3 + 3], p[t * 3 + 4], p[t * 3 + 6], p[t * 3 + 7]]
+      const det = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
+      const l0 = ((y1 - y2) * (x - x2) + (x2 - x1) * (y - y2)) / det
+      const l1 = ((y2 - y0) * (x - x2) + (x0 - x2) * (y - y2)) / det
+      if (l0 > 0 && l1 > 0 && 1 - l0 - l1 > 0) n++
+    }
+    return n
+  }
+
+  // Latitude θL − k√(pL − i): a silhouette 0.4 of a cell past column 2, at 0.5 rad.
+  const [K, EDGE_Q, THETA_L] = [0.2, 0.4, 0.5]
+  const sqrtProfile = [0, 1, 2].map((i) => THETA_L - K * Math.sqrt(2 + EDGE_Q - i))
+
+  it('places the crossing, and the texels out to it, on an exact square-root profile', () => {
+    const g = buildWarpGeometry([{ mesh: meridianRows(sqrtProfile), viewport: FULL }])
+    expect(g.meshes[0].silhouette).toEqual({ edges: 3, byLaw: 3, halfway: 0 })
+    // Cut at a half and three quarters of the way out, then the edge itself,
+    // each vertex carrying the latitude the profile has there.
+    for (const f of [0.5, 0.75, 1]) {
+      const vertices = at(g, bandX(EDGE_Q, f))
+      expect(vertices.length, String(f)).toBeGreaterThan(0)
+      for (const v of vertices) expect(v.lat, String(f)).toBeCloseTo(THETA_L - K * Math.sqrt(EDGE_Q * (1 - f)), 6)
+    }
+    expect(Math.max(...bandVertices(g).map((v) => v.x))).toBeCloseTo(bandX(EDGE_Q, 1), 5)
+  })
+
+  it('reaches halfway where the steps do not lengthen, carrying them on unchanged', () => {
+    // Uniform steps are a grid line running along an edge, or an open rim:
+    // nothing says where in the cell the edge falls.
+    const g = buildWarpGeometry([{ mesh: meridianRows([0.1, 0.2, 0.3]), viewport: FULL }])
+    expect(g.meshes[0].silhouette).toEqual({ edges: 3, byLaw: 0, halfway: 3 })
+    expect(Math.max(...bandVertices(g).map((v) => v.x))).toBeCloseTo(bandX(0.5, 1), 5)
+    for (const v of at(g, bandX(0.5, 1))) expect(v.lat).toBeCloseTo(0.35, 6)
+  })
+
+  it('extends nothing where the steps put the edge on the last node', () => {
+    // A last step three times the one before: past the law's 2.414 even with
+    // the edge on the node itself.
+    const g = buildWarpGeometry([{ mesh: meridianRows([0.1, 0.15, 0.3]), viewport: FULL }])
+    expect(g.meshes[0]).toMatchObject({ edgeTriangles: 0, silhouette: { edges: 3, byLaw: 0, halfway: 0 } })
+    expect(sampleWarpGeometry(g, columnX(2) + 0.01, 0.5)).toBeNull()
+  })
+
+  it("follows the nodes' own weight trend, never above the last node's, and ends at zero", () => {
+    const weightsAt = (w: number[]) => {
+      const g = buildWarpGeometry([{ mesh: meridianRows(sqrtProfile, w), viewport: FULL }])
+      return [0.5, 0.75, 1].map((f) => {
+        const ws = at(g, bandX(EDGE_Q, f)).map((v) => v.weight)
+        expect(Math.max(...ws) - Math.min(...ws)).toBeLessThan(1e-6)
+        return ws[0]
+      })
+    }
+    const close = (actual: number[], expected: number[]) =>
+      actual.forEach((a, k) => expect(a, `${expected}`).toBeCloseTo(expected[k], 6))
+    // A lone projector's edge: held to three quarters, then out.
+    close(weightsAt([1, 1, 1]), [1, 1, 0])
+    // A blend handing over: the trend reaches zero before the edge, so the
+    // band falls straight from the last node's weight to nothing.
+    close(weightsAt([1, 0.9, 0.2]), [0.1, 0.05, 0])
+    // Rising towards the edge: never brighter than the last node.
+    close(weightsAt([0.2, 0.5, 0.8]), [0.8, 0.8, 0])
+    // Falling, not to zero: continued at its own rate per radian, to the
+    // angle the law puts between the last node and the edge.
+    const toEdge = K * Math.sqrt(EDGE_Q)
+    const trend = 0.5 - (0.8 - 0.5) * (toEdge / (sqrtProfile[2] - sqrtProfile[1]))
+    expect(trend).toBeGreaterThan(0)
+    close(weightsAt([1, 0.8, 0.5]), [0.5 + (trend - 0.5) * 0.5, 0.5 + (trend - 0.5) * 0.75, 0])
+  })
+
+  it('extends two opposite corners each on its own, never across the missing middle', () => {
+    // The cell (1..2, 1..2) keeps a and d and loses b and c: in clip space
+    // a at (-1/3, 1/3), d at (1/3, -1/3). Each reaches halfway to its two
+    // missing neighbours; bridging the two would draw the cell's middle,
+    // which no node there reaches.
+    const g = buildWarpGeometry([
+      { mesh: parsed(gridText(4, 4, (i, j) => ((i === 2 && j === 1) || (i === 1 && j === 2) ? null : smooth(i, j)))), viewport: FULL },
+    ])
+    expect(sampleWarpGeometry(g, -0.3, 0.3)).not.toBeNull()
+    expect(sampleWarpGeometry(g, 0.3, -0.3)).not.toBeNull()
+    expect(sampleWarpGeometry(g, 0, 0)).toBeNull()
+  })
+
+  it('covers the band exactly once, with no crack where two cells share a crossing', () => {
+    const g = buildWarpGeometry([{ mesh: meridianRows(sqrtProfile), viewport: FULL }])
+    const edgeX = bandX(EDGE_Q, 1)
+    let inside = 0
+    for (let s = 1; s <= 600; s++) {
+      // A low-discrepancy scatter over the last column of cells, off every edge.
+      const x = columnX(2) + ((s * 0.6180339887) % 1) * (columnX(3) - columnX(2))
+      const y = -1 + ((s * 0.7548776662) % 1) * 2
+      if (Math.abs(x - edgeX) < 1e-4) continue
+      if (x < edgeX) inside++
+      expect(coverCount(g, x, y), `${x}, ${y}`).toBe(x < edgeX ? 1 : 0)
+    }
+    expect(inside).toBeGreaterThan(100)
   })
 })
 
@@ -562,10 +723,16 @@ describe("parity with sphere-sim's own tracer", () => {
     resY: number
     samples: [number, number, number, number][]
   }
+  interface EdgeRig extends Rig {
+    /** `[i, j, di, dj, t]`: node (i, j) reaches the surface, its neighbour past it does not, and the tracer's rays stop `t` of the way. */
+    silhouette: [number, number, number, number, number][]
+    /** `[px, py, u, v, w]`: traced texel and weight where complete triangles alone leave black. */
+    band: [number, number, number, number, number][]
+  }
   const parity = JSON.parse(fixture('parity.json')) as {
     provenance: { sphereSimCommit: string }
     sosQuadrantViewports: ({ id: string } & WarpViewport)[]
-    rigs: Rig[]
+    rigs: EdgeRig[]
     rotated: Rig & { rotationOffsetDeg: number }
   }
 
@@ -755,6 +922,78 @@ describe("parity with sphere-sim's own tracer", () => {
       }
       // The plan's figure is 3.6× on Boulder and both placed rigs; the bound is 8×.
       expect(widest / g.meshes[0].medianWidthRad, rig.name).toBeLessThan(4)
+    }
+  })
+
+  describe('the silhouette, which the mesh cannot state', () => {
+    /**
+     * Every figure here was measured on this fixture. The two rigs are the
+     * two cases the weight rule is torn between: Boulder's edges are almost
+     * all blended, so its band is dark, and the placed rig's one projector
+     * lights its edge alone at full weight — whose deliberate fade over the
+     * last strip is most of that rig's weight error.
+     */
+    const expected: Record<string, { law: number; halfway: number; medianPx: number; maxPx: number; light: number; texelDeg: number; weight: number }> = {
+      boulder: { law: 116, halfway: 8, medianPx: 1.5, maxPx: 16, light: 0.99, texelDeg: 2, weight: 0.03 },
+      'placed-pole': { law: 116, halfway: 8, medianPx: 1.5, maxPx: 7, light: 0.95, texelDeg: 3.5, weight: 0.13 },
+    }
+
+    /** How far along the segment from `a` to `b`, as a fraction, the geometry's farthest vertex on it lies. */
+    function reachAlong(g: WarpGeometry, a: { x: number; y: number }, b: { x: number; y: number }): number {
+      const [ex, ey] = [b.x - a.x, b.y - a.y]
+      const length2 = ex * ex + ey * ey
+      let reach = 0
+      for (let k = 0; k < g.vertexCount; k++) {
+        const [px, py] = [g.positions[k * 3] - a.x, g.positions[k * 3 + 1] - a.y]
+        const along = (px * ex + py * ey) / length2
+        if (Math.abs(px * ey - py * ex) / length2 < 1e-5 && along > 1e-6 && along <= 1 + 1e-6) reach = Math.max(reach, along)
+      }
+      return reach
+    }
+
+    for (const rig of parity.rigs) {
+      const want = expected[rig.name]
+
+      it(`${rig.name} ${rig.projectorId}: extends every silhouette edge, the law's crossings within pixels of the tracer's`, () => {
+        const mesh = parsed(fixture(rig.file))
+        const g = buildWarpGeometry([{ mesh, viewport: FULL }])
+        expect(g.meshes[0].silhouette).toEqual({ edges: rig.silhouette.length, byLaw: want.law, halfway: want.halfway })
+        const { cols, rows, nodes } = mesh
+        const clip = (i: number, j: number) => meshToClip(nodes[j * cols + i].x, nodes[j * cols + i].y, mesh.aspect, FULL)
+        const lawPx: number[] = []
+        for (const [i, j, di, dj, t] of rig.silhouette) {
+          // The band's last vertex on this grid edge is where it put the crossing.
+          const reach = reachAlong(g, clip(i, j), clip(i + di, j + dj))
+          expect(reach, `${i},${j} towards ${di},${dj}`).toBeGreaterThan(0)
+          if (Math.abs(reach - 0.5) < 1e-6) continue
+          lawPx.push(Math.abs(reach - t) * (di !== 0 ? rig.resX / (cols - 1) : rig.resY / (rows - 1)))
+        }
+        lawPx.sort((p, q) => p - q)
+        expect(lawPx).toHaveLength(want.law)
+        expect(lawPx[lawPx.length >> 1]).toBeLessThan(want.medianPx)
+        expect(lawPx[lawPx.length - 1]).toBeLessThan(want.maxPx)
+      })
+
+      it(`${rig.name} ${rig.projectorId}: draws the band a staircase leaves black, with the tracer's texels`, () => {
+        const g = buildWarpGeometry([{ mesh: parsed(fixture(rig.file)), viewport: FULL }])
+        expect(rig.band.length).toBeGreaterThan(500)
+        let light = 0
+        let drawn = 0
+        const texelDeg: number[] = []
+        const weightError: number[] = []
+        for (const [px, py, u, v, w] of rig.band) {
+          const s = sampleWarpGeometry(g, (px / rig.resX) * 2 - 1, 1 - (py / rig.resY) * 2)
+          light += w
+          if (s === null) continue
+          drawn += w
+          weightError.push(Math.abs(s.weight - w))
+          if (w >= 0.05) texelDeg.push((angleRad(nodeDirection(s.u, s.v), nodeDirection(u, v)) * 180) / Math.PI)
+        }
+        // Complete triangles alone draw none of these points.
+        expect(drawn / light).toBeGreaterThan(want.light)
+        expect(Math.max(...texelDeg)).toBeLessThan(want.texelDeg)
+        expect(weightError.reduce((sum, e) => sum + e, 0) / weightError.length).toBeLessThan(want.weight)
+      })
     }
   })
 })

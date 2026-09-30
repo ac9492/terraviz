@@ -40,16 +40,30 @@
  * unwrapped `(u, v)` lands tens of pixels out — up to 66 in the fixture
  * generator's survey. The parity test pins both sides.
  *
- * **Two drops, one expected and one counted.** A triangle touching a
- * node that reaches nothing is dropped, not clamped: a `-1` node
+ * **The silhouette is reconstructed, not staircased.** A node whose ray
+ * reaches nothing has no texel, so no triangle may use it: a `-1` node
  * interpolated towards its neighbours smears texel (0, 0) across the
- * cell. That is the silhouette and happens on every mesh. A triangle
- * wider than `WIDE_TRIANGLE_FACTOR` times the mesh's own median width is
- * dropped too, and counted for the HUD, because nothing on a sphere
- * reaches it — the widest measured on Boulder or on either placed rig is
- * 3.6 times the median — so a drop means a cell straddling two UV islands
- * of a mesh surface, whose corners are neighbours on the model and
- * strangers in the texture.
+ * cell. A player that simply drops those triangles ends each projector's
+ * picture at its last nodes, in a staircase up to a cell short of where
+ * its light really ends — 96×54 px at the 41×41 grid sphere-sim's page
+ * exports for Boulder's 3840×2160 projectors. The grid holds enough to do
+ * better. Near a smooth silhouette the angle a ray sweeps grows like the
+ * square root of its distance from the edge, so the ratio of the last two
+ * steps along a grid line says how far past the last node the edge lies:
+ * on Boulder a median 1.1 px from sphere-sim's own trace, p90 9 px.
+ * Each cell the silhouette crosses is drawn out to those
+ * crossings, with the texels continued along the same law, and the
+ * weight follows the nodes' own trend and fades to zero at the edge
+ * (`edgeBand` says why each). Where a grid line runs along the edge the
+ * law has nothing to read, and the crossing goes halfway.
+ *
+ * **One drop, counted.** A triangle wider than `WIDE_TRIANGLE_FACTOR`
+ * times the mesh's own median width is dropped and counted for the HUD,
+ * because nothing on a sphere reaches it — the widest measured on Boulder
+ * or on either placed rig is 3.6 times the median, reconstructed edge
+ * included — so a drop means a cell straddling two UV islands of a mesh
+ * surface, whose corners are neighbours on the model and strangers in the
+ * texture.
  *
  * **The weight is linear light.** sphere-sim's `i` multiplies radiance
  * and is encoded afterwards (its conventions.ts §B, clause 4). A player
@@ -315,11 +329,10 @@ type Tri = [number, number, number]
  *
  * A full cell splits along b–c, the diagonal the parity fixtures were
  * measured on. A cell missing b or c splits along a–d instead, so the
- * triangle of its three good corners is drawn. A fixed split drew nothing
- * in every cell whose missing corner sat on the diagonal. That left a
- * right-angle staircase on two sides of each projector's disc and a 45°
- * chamfer on the other two, and at the poles, where one projector alone
- * lights the edge, the staircase was bright.
+ * triangle of its three good corners is kept whole. The part of the cell
+ * past that triangle is the reconstructed edge's (`edgeBand`), which
+ * joins it along the diagonal, so the region between measured nodes is
+ * interpolated between them exactly as before the edge existed.
  */
 function cellTriangles(
   cols: number,
@@ -351,7 +364,11 @@ function cellTriangles(
  *
  * The wide-triangle drop is not consulted. It keeps every triangle no
  * wider than the median, so it never empties a mesh, and a lit triangle
- * it does drop is counted on the HUD rather than lost silently.
+ * it does drop is counted on the HUD rather than lost silently. Nor is
+ * the reconstructed edge, which cannot change the answer: it carries only
+ * its corners' own weights outwards, and it draws a triangle only where
+ * the nodes behind those corners are drawn too, which puts every one of
+ * them in a complete grid triangle already counted here.
  */
 function meshLight(cols: number, rows: number, nodes: readonly WarpNode[]): 'lit' | 'unlit' | 'none' {
   let found: 'unlit' | 'none' = 'none'
@@ -381,13 +398,20 @@ export interface PlacedWarpMesh {
 }
 
 export interface WarpMeshStats {
-  /** Triangles drawn. */
+  /** Triangles drawn, the reconstructed edge's included. */
   readonly triangles: number
-  /** Dropped for touching a node that reaches nothing: the silhouette, on every mesh. */
-  readonly droppedNoData: number
+  /** Of those, the ones past the last nodes, out to the silhouette. */
+  readonly edgeTriangles: number
+  /**
+   * Grid edges the silhouette crosses — from a node that reaches the
+   * surface to a neighbour that does not — and how each was extended: by
+   * the square-root law, halfway where the law had nothing to read, or
+   * not at all where no node behind the edge was drawn either.
+   */
+  readonly silhouette: { readonly edges: number; readonly byLaw: number; readonly halfway: number }
   /** Dropped for exceeding `WIDE_TRIANGLE_FACTOR` × the median width — never on a sphere. */
   readonly droppedWide: number
-  /** The median triangle width that bound is relative to, in radians. */
+  /** The median width of the grid's own triangles, which that bound is relative to, in radians. */
   readonly medianWidthRad: number
 }
 
@@ -486,9 +510,188 @@ function assertViewport(viewport: WarpViewport, index: number): void {
   }
 }
 
+/** A vertex as the build assembles it: a raster position in the mesh's own units, a direction, a weight. */
+interface WarpVertex {
+  readonly x: number
+  readonly y: number
+  readonly dir: Vec3
+  readonly weight: number
+}
+
+type VertexTri = readonly [WarpVertex, WarpVertex, WarpVertex]
+
+/**
+ * Where the reconstructed edge is cut into strips, as fractions of the
+ * way from the last node to the silhouette. The texel under a point of
+ * that band follows the square-root law, which is nothing like the
+ * straight line a rasterizer interpolates, so the strips' corners are put
+ * on the law: drawn as one strip, the band's texels land a p90 3.2° from
+ * sphere-sim's trace across Boulder's edge cells, and cut here 1.0°, what
+ * the grid itself manages in those cells. The last strip is also where
+ * the weight fades out.
+ */
+const EDGE_BAND_LEVELS = [0.5, 0.75] as const
+
+/**
+ * The ratio of the last step to the one before it along a grid line that
+ * ends `q` short of a smooth silhouette, the two steps `h1` and `h2` long
+ * in raster units. Near such an edge the angle a ray sweeps grows like
+ * the square root of its distance from it — a ray grazing a sphere — so
+ * the steps lengthen towards it, by a factor that says how far off it is:
+ * √h1 / (√(h1 + h2) − √h1), 2.414 on an even grid, with the edge on the
+ * last node, falling towards h1 / h2 as it recedes. Strictly decreasing
+ * in `q`, which the bisection relies on.
+ */
+function silhouetteStepRatio(q: number, h1: number, h2: number): number {
+  return (Math.sqrt(q + h1) - Math.sqrt(q)) / (Math.sqrt(q + h1 + h2) - Math.sqrt(q + h1))
+}
+
+/**
+ * The reconstructed edge along one grid line: from node `a`, which
+ * reaches the surface, towards its neighbour `b`, which does not, with
+ * `a1` and `a2` the nodes behind `a` on the same line (`a2` absent at the
+ * grid's border). The band's vertices past `a`, nearest first and the
+ * last on the silhouette — or `null` where the grid gives nothing to
+ * extend by: no drawn node behind `a`, or steps that put the edge on `a`
+ * itself.
+ *
+ * **Where.** When the last two steps lengthen as the square-root law
+ * allows for an edge inside this cell, the law places the crossing: on
+ * Boulder, 464 of its 496 crossings, a median 1.1 px from sphere-sim's
+ * trace (p90 9 px, worst 15). When they do not, the edge is not a
+ * silhouette met head-on — a grid line running along it, whose steps are
+ * all alike, or a mesh surface's open rim — and the grid holds nothing
+ * about where in the cell it falls, so the crossing goes halfway and the
+ * steps carry on unchanged. On Boulder's other 32 the edge lies a median
+ * 0.7 of a cell out.
+ *
+ * **What texel.** Carried on past `a` along the great circle from `a1`
+ * through `a`, by the angle the law gives at each vertex, so the band
+ * reads the texels sphere-sim's rays would.
+ *
+ * **What weight.** The nodes' own trend, continued to the crossing and
+ * clamped to [0, the last node's]: where another projector is taking
+ * over, the weights fall steeply into the edge and reach zero before it;
+ * where this one lights the edge alone they hold. Fading to zero across
+ * the whole band instead halved the light at a lone projector's rim. The
+ * last strip then fades to zero at the crossing whatever the trend says.
+ * The light there arrives edge-on — a raster's last quarter-band spans the
+ * outer half of the band's arc on the sphere — so fading it costs a lone
+ * rim little, while a weight held there put light where a blend has none:
+ * inside sphere-sim's polar mask, whose zero can fall past the last node
+ * where no trend can see it, and past the sphere wherever the crossing
+ * overshoots.
+ */
+function edgeBand(
+  nodes: readonly WarpNode[],
+  dirs: readonly (Vec3 | null)[],
+  a: number,
+  b: number,
+  a1: number,
+  a2: number | null,
+): { readonly vertices: readonly WarpVertex[]; readonly byLaw: boolean } | null {
+  const d0 = dirs[a]
+  const d1 = dirs[a1]
+  if (d0 === null || d1 === null) return null
+  const last = angleBetween(d1, d0)
+  // The great circle's normal; a step of zero has no direction to carry on in.
+  const n = { x: d1.y * d0.z - d1.z * d0.y, y: d1.z * d0.x - d1.x * d0.z, z: d1.x * d0.y - d1.y * d0.x }
+  const nLength = Math.hypot(n.x, n.y, n.z)
+  if (!(last > 0) || !(nLength > 0)) return null
+  // Unit and perpendicular to d0, pointing on from a1 through a.
+  const t = {
+    x: (n.y * d0.z - n.z * d0.y) / nLength,
+    y: (n.z * d0.x - n.x * d0.z) / nLength,
+    z: (n.x * d0.y - n.y * d0.x) / nLength,
+  }
+
+  const distance = (p: number, q: number): number => Math.hypot(nodes[p].x - nodes[q].x, nodes[p].y - nodes[q].y)
+  const h1 = distance(a, a1)
+  const hB = distance(a, b)
+  const d2 = a2 === null ? null : dirs[a2]
+  const before = d2 === null ? 0 : angleBetween(d2, d1)
+
+  // The crossing, `q` past `a` in raster units, and the angle past `a` at a
+  // fraction `f` of the way out to it.
+  let law: { q: number; angleAt: (f: number) => number } | null = null
+  if (d2 !== null && a2 !== null && before > 0) {
+    const h2 = distance(a1, a2)
+    const ratio = last / before
+    if (ratio >= silhouetteStepRatio(0, h1, h2)) return null
+    if (ratio > silhouetteStepRatio(hB, h1, h2)) {
+      let lo = 0
+      let hi = hB
+      for (let k = 0; k < 40; k++) {
+        const mid = (lo + hi) / 2
+        if (silhouetteStepRatio(mid, h1, h2) > ratio) lo = mid
+        else hi = mid
+      }
+      const q = (lo + hi) / 2
+      const k = last / (Math.sqrt(q + h1) - Math.sqrt(q))
+      law = { q, angleAt: (f) => k * (Math.sqrt(q) - Math.sqrt(q * (1 - f))) }
+    }
+  }
+  const halfway = hB / 2
+  const { q, angleAt } = law ?? { q: halfway, angleAt: (f: number) => (last * halfway * f) / h1 }
+
+  const wA = nodes[a].weight
+  const trend = Math.min(wA, Math.max(0, wA - (nodes[a1].weight - wA) * (angleAt(1) / last)))
+  const vertices = [...EDGE_BAND_LEVELS, 1].map((f): WarpVertex => {
+    const s = (q * f) / hB
+    const phi = angleAt(f)
+    const c = Math.cos(phi)
+    const sn = Math.sin(phi)
+    return {
+      x: nodes[a].x + (nodes[b].x - nodes[a].x) * s,
+      y: nodes[a].y + (nodes[b].y - nodes[a].y) * s,
+      dir: { x: d0.x * c + t.x * sn, y: d0.y * c + t.y * sn, z: d0.z * c + t.z * sn },
+      weight: f === 1 ? 0 : wA + (trend - wA) * f,
+    }
+  })
+  return { vertices, byLaw: law !== null }
+}
+
+/**
+ * Triangulate the part of a cell between two bands leaving its drawn
+ * corners, strip by strip: the quad between level k and k + 1 on either
+ * side, cut along its shorter diagonal so no strip becomes a sliver. A
+ * band that was not extended lends its corner to every strip, which fans
+ * the other band out from it; two bands leaving one corner meet in a
+ * triangle.
+ */
+function ladder(left: readonly WarpVertex[], right: readonly WarpVertex[], out: VertexTri[]): void {
+  const levels = Math.max(left.length, right.length)
+  const at = (band: readonly WarpVertex[], k: number): WarpVertex => band[Math.min(k, band.length - 1)]
+  for (let k = 0; k + 1 < levels; k++) {
+    const l0 = at(left, k)
+    const l1 = at(left, k + 1)
+    const r0 = at(right, k)
+    const r1 = at(right, k + 1)
+    const split: VertexTri[] =
+      Math.hypot(l0.x - r1.x, l0.y - r1.y) <= Math.hypot(l1.x - r0.x, l1.y - r0.y)
+        ? [
+            [l0, l1, r1],
+            [l0, r1, r0],
+          ]
+        : [
+            [l0, l1, r0],
+            [l1, r1, r0],
+          ]
+    for (const tri of split) {
+      if (tri[0] !== tri[1] && tri[1] !== tri[2] && tri[0] !== tri[2]) out.push(tri)
+    }
+  }
+}
+
+/** The widest angle between two of a triangle's directions. */
+function triangleWidth([p, q, r]: VertexTri): number {
+  return Math.max(angleBetween(p.dir, q.dir), angleBetween(q.dir, r.dir), angleBetween(p.dir, r.dir))
+}
+
 /**
  * Build one output's geometry from its placed meshes: two triangles per
- * cell, split along the same diagonal the plan's measurements used, and
+ * full cell, split along the same diagonal the plan's measurements used;
+ * each cell the silhouette crosses drawn out to it (`edgeBand`); and
  * every triangle wound counter-clockwise in clip space whichever way the
  * file runs, so a mirrored or bottom-first mesh draws under the default
  * face culling rather than vanishing.
@@ -502,35 +705,93 @@ export function buildWarpGeometry(placed: readonly PlacedWarpMesh[]): WarpGeomet
     assertViewport(viewport, index)
     const { cols, rows, nodes } = mesh
     const dirs = nodes.map((n) => (n.drawable ? nodeDirection(n.u, n.v) : null))
-    const candidates: { tri: Tri; width: number }[] = []
-    let droppedNoData = 0
+    const drawn = (k: number): boolean => dirs[k] !== null
+    const vertexOf = nodes.map((n, k): WarpVertex | null => {
+      const dir = dirs[k]
+      return dir === null ? null : { x: n.x, y: n.y, dir, weight: n.weight }
+    })
+
+    // The band leaving a node towards each missing neighbour, keyed by node
+    // and heading. Built once: two cells share every grid edge, and a band
+    // they disagreed on would crack the edge between them.
+    const bands = new Map<number, readonly WarpVertex[]>()
+    let byLaw = 0
+    let halfway = 0
+    const inside = (i: number, j: number): boolean => i >= 0 && j >= 0 && i < cols && j < rows
+    const band = (i: number, j: number, di: number, dj: number): readonly WarpVertex[] => {
+      const a = j * cols + i
+      const key = a * 4 + (di > 0 ? 0 : di < 0 ? 1 : dj > 0 ? 2 : 3)
+      const known = bands.get(key)
+      if (known !== undefined) return known
+      const a1 = inside(i - di, j - dj) ? (j - dj) * cols + (i - di) : null
+      const a2 = inside(i - 2 * di, j - 2 * dj) ? (j - 2 * dj) * cols + (i - 2 * di) : null
+      const edge = a1 === null ? null : edgeBand(nodes, dirs, a, (j + dj) * cols + (i + di), a1, a2)
+      if (edge?.byLaw === true) byLaw++
+      else if (edge !== null) halfway++
+      const vertices = [vertexOf[a] as WarpVertex, ...(edge?.vertices ?? [])]
+      bands.set(key, vertices)
+      return vertices
+    }
+
+    const node = (k: number): WarpVertex => vertexOf[k] as WarpVertex
+    const grid: VertexTri[] = []
+    const edge: VertexTri[] = []
     for (let j = 0; j < rows - 1; j++) {
       for (let i = 0; i < cols - 1; i++) {
-        for (const tri of cellTriangles(cols, i, j, (k) => dirs[k] !== null)) {
-          const [p, q, r] = tri.map((k) => dirs[k])
-          if (p === null || q === null || r === null) {
-            droppedNoData++
-            continue
+        for (const [p, q, r] of cellTriangles(cols, i, j, drawn)) {
+          if (drawn(p) && drawn(q) && drawn(r)) grid.push([node(p), node(q), node(r)])
+        }
+        // The corners in order round the cell, and the band out of the
+        // drawn part of it towards each corner that reaches nothing.
+        const ring = [
+          [i, j],
+          [i + 1, j],
+          [i + 1, j + 1],
+          [i, j + 1],
+        ] as const
+        const good = ring.map(([ci, cj]) => drawn(cj * cols + ci))
+        const count = good.filter(Boolean).length
+        if (count === 0 || count === 4) continue
+        const next = (k: number): number => (k + 1) % 4
+        const prev = (k: number): number => (k + 3) % 4
+        const toward = (from: number, to: number): readonly WarpVertex[] =>
+          band(ring[from][0], ring[from][1], ring[to][0] - ring[from][0], ring[to][1] - ring[from][1])
+        if (count === 3) {
+          // Beyond the diagonal of the three good corners' triangle.
+          const m = good.indexOf(false)
+          ladder(toward(prev(m), m), toward(next(m), m), edge)
+        } else if (count === 1 || good[0] === good[2]) {
+          // A lone corner, or two opposite ones — each on its own, never
+          // bridged across the missing middle.
+          for (let p = 0; p < 4; p++) {
+            if (good[p]) ladder(toward(p, prev(p)), toward(p, next(p)), edge)
           }
-          candidates.push({ tri, width: Math.max(angleBetween(p, q), angleBetween(q, r), angleBetween(p, r)) })
+        } else {
+          // Two neighbours: out from the side they share.
+          const s = [0, 1, 2, 3].find((k) => good[k] && good[next(k)]) as number
+          ladder(toward(s, prev(s)), toward(next(s), next(next(s))), edge)
         }
       }
     }
-    const widths = candidates.map((t) => t.width).sort((p, q) => p - q)
+
+    const widths = grid.map(triangleWidth).sort((p, q) => p - q)
     const medianWidthRad = widths.length === 0 ? 0 : widths[widths.length >> 1]
     // A zero median means most triangles name one texel — a degenerate file
     // with no scale to judge width against, so nothing is dropped for it.
+    // The bound is the grid's own: the band's strips are no wider than the
+    // grid's widest on any rig measured, so one rule serves both.
     const bound = medianWidthRad > 0 ? WIDE_TRIANGLE_FACTOR * medianWidthRad : Infinity
-    const kept = candidates.filter((t) => t.width <= bound).map((t) => t.tri)
+    const keptGrid = grid.filter((tri) => triangleWidth(tri) <= bound)
+    const keptEdge = edge.filter((tri) => triangleWidth(tri) <= bound)
     return {
       mesh,
       viewport,
-      dirs,
-      kept,
+      kept: [...keptGrid, ...keptEdge],
       stats: {
-        triangles: kept.length,
-        droppedNoData,
-        droppedWide: candidates.length - kept.length,
+        triangles: keptGrid.length + keptEdge.length,
+        edgeTriangles: keptEdge.length,
+        silhouette: { edges: bands.size, byLaw, halfway },
+        droppedWide: grid.length - keptGrid.length + edge.length - keptEdge.length,
         medianWidthRad,
       },
     }
@@ -541,18 +802,17 @@ export function buildWarpGeometry(placed: readonly PlacedWarpMesh[]): WarpGeomet
   const directions = new Float32Array(vertexCount * 3)
   const weights = new Float32Array(vertexCount)
   let vertex = 0
-  for (const { mesh, viewport, dirs, kept } of perMesh) {
+  for (const { mesh, viewport, kept } of perMesh) {
     for (const tri of kept) {
-      const clip = tri.map((k) => meshToClip(mesh.nodes[k].x, mesh.nodes[k].y, mesh.aspect, viewport))
+      const clip = tri.map((v) => meshToClip(v.x, v.y, mesh.aspect, viewport))
       const area =
         (clip[1].x - clip[0].x) * (clip[2].y - clip[0].y) - (clip[2].x - clip[0].x) * (clip[1].y - clip[0].y)
       const order = area < 0 ? [0, 2, 1] : [0, 1, 2]
       for (const o of order) {
-        const k = tri[o]
-        const dir = dirs[k] as Vec3
+        const { dir, weight } = tri[o]
         positions.set([clip[o].x, clip[o].y, 0], vertex * 3)
         directions.set([dir.x, dir.y, dir.z], vertex * 3)
-        weights[vertex] = mesh.nodes[k].weight
+        weights[vertex] = weight
         vertex++
       }
     }
