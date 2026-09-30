@@ -549,6 +549,88 @@ describe('the reconstructed edge', () => {
   })
 })
 
+describe("the blend's zero line", () => {
+  /** Six columns by three rows, each column's weight the same all the way down; `null` reaches nothing. */
+  function columns(weights: readonly (number | null)[]): WarpMesh {
+    return parsed(
+      gridText(6, 3, (i, j) => (weights[i] === null ? null : [smooth(i, j)[0], smooth(i, j)[1], weights[i] as number])),
+    )
+  }
+  /** Column `c`'s clip-space x under `FULL`, fractional columns included. */
+  const columnX = (c: number): number => (2 * c) / 5 - 1
+  const weightAt = (g: WarpGeometry, c: number): number => {
+    const s = sampleWarpGeometry(g, columnX(c), 0.2)
+    if (s === null) throw new Error(`nothing covers column ${c}`)
+    return s.weight
+  }
+
+  it('ends the picture where the nodes’ trend crosses zero, not at the node written 0', () => {
+    // A ramp that reaches zero 0.4 of a cell before column 2: 0.3 at column
+    // 2, 0.8 at column 3. Columns 0 and 1 are past it and written 0, and
+    // interpolated from those the picture would run on to column 1.
+    const g = buildWarpGeometry([{ mesh: columns([0, 0, 0.3, 0.8, 1, 1]), viewport: FULL }])
+    expect(weightAt(g, 1.4)).toBeCloseTo(0, 6)
+    expect(weightAt(g, 1.6)).toBeCloseTo(0.1, 6)
+    expect(blendFactor(weightAt(g, 1.2), DEFAULT_BLEND_GAMMA)).toBe(0)
+    expect(blendFactor(weightAt(g, 1.6), DEFAULT_BLEND_GAMMA)).toBeGreaterThan(0)
+    // Column 0 has no lit neighbour and keeps its 0.
+    expect(weightAt(g, 0)).toBeCloseTo(0, 6)
+  })
+
+  it('measures the trend in the file’s own spacing, which need not be even', () => {
+    // Columns at clip x -1, -0.8, -0.5, 0, 0.5, 1, and a ramp w = x + 0.6
+    // that reaches zero at -0.6: between the 0 node at -0.8 and the lit
+    // one at -0.5, two thirds of the way along — not where an even grid's
+    // arithmetic would put it.
+    const xs = [-1, -0.8, -0.5, 0, 0.5, 1]
+    const aspect = 16 / 9
+    const lines = ['2', `${xs.length} 3`]
+    for (let j = 0; j < 3; j++) {
+      xs.forEach((x, i) => lines.push(`${x * aspect} ${1 - j} ${smooth(i, j)[0]} ${smooth(i, j)[1]} ${Math.min(1, Math.max(0, x + 0.6))}`))
+    }
+    const g = buildWarpGeometry([{ mesh: parsed(`${lines.join('\n')}\n`), viewport: FULL }])
+    const at = (x: number): number => sampleWarpGeometry(g, x, 0.2)!.weight
+    expect(at(-0.6)).toBeCloseTo(0, 6)
+    expect(at(-0.55)).toBeCloseTo(0.05, 6)
+    expect(blendFactor(at(-0.65), DEFAULT_BLEND_GAMMA)).toBe(0)
+  })
+
+  it('leaves a 0 node alone where its lit neighbours’ trend does not reach zero before it', () => {
+    for (const [name, weights] of [
+      ['flat', [0, 0.5, 0.5, 0.5, 0.5, 0.5]],
+      ['falling inwards', [0, 0.5, 0.3, 0.2, 0.2, 0.2]],
+      ['still above zero at the node', [0, 0.6, 0.8, 1, 1, 1]],
+    ] as const) {
+      const g = buildWarpGeometry([{ mesh: columns(weights), viewport: FULL }])
+      expect(weightAt(g, 0), name).toBeCloseTo(0, 6)
+      expect(weightAt(g, 0.5), name).toBeCloseTo(weights[1] / 2, 6)
+    }
+  })
+
+  it('takes the lowest value where two lit neighbours’ trends disagree', () => {
+    // Node (0, 0) is written 0. Along its row the trend reaches -0.2 there,
+    // down its column -0.5: the lower puts each crossing nearest the light.
+    const w = (i: number, j: number): number =>
+      i === 0 && j === 0 ? 0 : j === 0 ? [0, 0.3, 0.8, 1][i] : i === 0 ? [0, 0.2, 0.9, 1][j] : 1
+    const g = buildWarpGeometry([
+      { mesh: parsed(gridText(4, 4, (i, j) => [smooth(i, j)[0], smooth(i, j)[1], w(i, j)])), viewport: FULL },
+    ])
+    expect(sampleWarpGeometry(g, -1, 1)!.weight).toBeCloseTo(-0.5, 6)
+  })
+
+  it('carries a 0 node’s value out through the band past the silhouette', () => {
+    // Column 0 reaches nothing, column 1 is written 0 and draws with -0.2,
+    // and its band carries -0.2 all the way to the silhouette — the last
+    // vertex too — so a strip beside it crosses zero where the cells do.
+    const g = buildWarpGeometry([{ mesh: columns([null, 0, 0.3, 0.8, 1, 1]), viewport: FULL }])
+    const band: number[] = []
+    for (let k = 0; k < g.vertexCount; k++) if (g.positions[k * 3] < columnX(1) - 1e-5) band.push(g.weights[k])
+    expect(band.length).toBeGreaterThan(0)
+    for (const weight of band) expect(weight).toBeCloseTo(-0.2, 6)
+    expect(blendFactor(sampleWarpGeometry(g, columnX(0.8), 0.2)!.weight, DEFAULT_BLEND_GAMMA)).toBe(0)
+  })
+})
+
 describe('sampleWarpGeometry', () => {
   const mesh = parsed(gridText(3, 3, (i, j) => [0.45 + 0.02 * i, 0.55 - 0.02 * j, 0.25 * i]))
   const g = buildWarpGeometry([{ mesh, viewport: SOS_QUADRANT_VIEWPORTS.P1 }])
@@ -728,6 +810,8 @@ describe("parity with sphere-sim's own tracer", () => {
     silhouette: [number, number, number, number, number][]
     /** `[px, py, u, v, w]`: traced texel and weight where complete triangles alone leave black. */
     band: [number, number, number, number, number][]
+    /** `[i, j, di, dj, t]`: node (i, j) is drawn and weighted 0, its neighbour lit, and the traced weight rises above 0 `t` of the way. */
+    zeroLine: [number, number, number, number, number][]
   }
   const parity = JSON.parse(fixture('parity.json')) as {
     provenance: { sphereSimCommit: string }
@@ -986,13 +1070,68 @@ describe("parity with sphere-sim's own tracer", () => {
           light += w
           if (s === null) continue
           drawn += w
-          weightError.push(Math.abs(s.weight - w))
+          // What the projector emits: past the blend's zero line the
+          // interpolated weight is below zero, and the shader clamps it.
+          weightError.push(Math.abs(Math.min(1, Math.max(0, s.weight)) - w))
           if (w >= 0.05) texelDeg.push((angleRad(nodeDirection(s.u, s.v), nodeDirection(u, v)) * 180) / Math.PI)
         }
         // Complete triangles alone draw none of these points.
         expect(drawn / light).toBeGreaterThan(want.light)
         expect(Math.max(...texelDeg)).toBeLessThan(want.texelDeg)
         expect(weightError.reduce((sum, e) => sum + e, 0) / weightError.length).toBeLessThan(want.weight)
+      })
+    }
+  })
+
+  describe("the blend's zero line, which the mesh cannot state either", () => {
+    /**
+     * Measured on this fixture. Boulder's sector crossfade rises like a
+     * power of the distance past its zero line, so the nodes' straight
+     * trend lands a few pixels inside the traced line, where the staircase
+     * lands tens outside it. The placed projector's zero line is its polar
+     * mask, which ends in a quadratic tail: there the trend lands further
+     * inside than the staircase lands outside, which costs the tail's faint
+     * light and halves the light drawn past the mask.
+     */
+    const expected: Record<string, { reconstructed: number; medianPx: number; maxPx: number; staircasePx?: number }> = {
+      boulder: { reconstructed: 80, medianPx: 8, maxPx: 16, staircasePx: 30 },
+      'placed-pole': { reconstructed: 21, medianPx: 17, maxPx: 34 },
+    }
+
+    for (const rig of parity.rigs) {
+      const want = expected[rig.name]
+
+      it(`${rig.name} ${rig.projectorId}: draws the zero line near the tracer's, not at the node written 0`, () => {
+        const mesh = parsed(fixture(rig.file))
+        const g = buildWarpGeometry([{ mesh, viewport: FULL }])
+        const { cols, rows, nodes } = mesh
+        const drawnAt = (i: number, j: number): number => {
+          const c = meshToClip(nodes[j * cols + i].x, nodes[j * cols + i].y, mesh.aspect, FULL)
+          const s = sampleWarpGeometry(g, c.x, c.y)
+          if (s === null) throw new Error(`nothing covers node ${i},${j}`)
+          return s.weight
+        }
+        expect(rig.zeroLine.length).toBeGreaterThan(20)
+        const errorPx: number[] = []
+        const staircasePx: number[] = []
+        let reconstructed = 0
+        for (const [i, j, di, dj, t] of rig.zeroLine) {
+          const zero = drawnAt(i, j)
+          const lit = drawnAt(i + di, j + dj)
+          expect(lit).toBeGreaterThan(0)
+          // Interpolation is linear along a grid edge: it crosses zero this
+          // far from the 0 node, or at the node when that kept its 0.
+          const s = zero < 0 ? zero / (zero - lit) : 0
+          if (zero < 0) reconstructed++
+          const cell = di !== 0 ? rig.resX / (cols - 1) : rig.resY / (rows - 1)
+          errorPx.push(Math.abs(s - t) * cell)
+          staircasePx.push(t * cell)
+        }
+        const median = (a: number[]): number => [...a].sort((p, q) => p - q)[a.length >> 1]
+        expect(reconstructed).toBe(want.reconstructed)
+        expect(median(errorPx)).toBeLessThan(want.medianPx)
+        expect(Math.max(...errorPx)).toBeLessThan(want.maxPx)
+        if (want.staircasePx !== undefined) expect(median(staircasePx)).toBeGreaterThan(want.staircasePx)
       })
     }
   })

@@ -465,12 +465,19 @@ A warp file describes each projector on a coarse grid, 41×41 by
 default, and says nothing about where between two grid points the
 sphere's edge falls. The app works that out from how the grid bunches
 up near the edge, and draws each projector's picture out to it,
-fading out. Check the edges with the calibration pattern on,
-especially at the top and bottom of each projector's picture: the
-polar regions, which that projector lights alone.
+fading out. Check the edges with the calibration pattern on, all the
+way round each projector's picture.
 
-What you should see is a curved edge that fades out. What is left over
-is not a fault in this app:
+On some rigs, the Boulder rig among them, the sides of each picture
+end well inside the sphere's edge. The blend hands that part of the
+sphere to the neighbouring projector, and this projector's share falls
+to zero before its own edge. The warp file gives the share only at its
+grid points, so the app follows its trend between them and ends the
+picture where it reaches zero.
+
+What you should see is a curved edge that fades out, and pictures that
+hand over along smooth curves. What is left over is not a fault in
+this app:
 
 - **A short step where the grid runs along the edge**, at the top,
   bottom and sides of each projector's picture: the grid gives
@@ -482,14 +489,28 @@ is not a fault in this app:
 - **The ring of grid cells just inside the edge is the least
   accurate.** The graticule can sit a few pixels off across an
   overlap there, up to about 28 px on the Boulder rig's meshes.
+- **A rim that stays bright to the edge at the top and bottom of each
+  picture**, on a rig whose blend darkens the poles, as the Boulder
+  rig's does.
+  The darkening falls between the grid's last point and the edge,
+  where the file says nothing.
+  [sphere-sim#55](https://github.com/zyra-project/sphere-sim/issues/55)
+  asks sphere-sim's exporter to record it.
 
-All three come from the grid's resolution. If any is objectionable,
+All four come from the grid's resolution. If any is objectionable,
 export again from sphere-sim with a finer grid (`cols` / `rows`).
 
+**Judge the edges on the sphere, not on a desk monitor.** A monitor
+shows each projector's picture alone. A sliver drawn at 3% of full
+brightness adds 3% to the neighbouring projector's light on the
+sphere, but on the monitor it reads as a 20% grey.
+
 A **staircase along the whole edge**, up to one grid cell deep, is a
-fault: the edge is not being reconstructed. So is a **bright rim**
-well past the edge. Either one belongs in a bug report with the warp
-file.
+fault: the edge is not being reconstructed. So are **steps down the
+sides** of each picture, up to a grid cell wide, where it hands over
+to its neighbour: the share is not being followed down to zero. So is
+a **bright rim** well past the edge. Any of these belongs in a bug
+report with the warp file.
 
 #### Restore, and a warp that will not load
 

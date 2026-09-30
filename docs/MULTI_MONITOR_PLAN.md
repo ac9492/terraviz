@@ -4176,10 +4176,10 @@ the surface has no texel, so a compliant player drops every triangle
 touching one, and each projector's image stops up to one cell short of
 its silhouette: 96×54 px on Boulder's 3840×2160 rasters at 41×41, in
 a staircase. Most of that edge carries no light, but the polar ends of
-each disc do — no neighbouring projector reaches them, so the share
-stays high up to the edge — and the first import of a sphere-sim
-bundle showed the staircase there. sphere-sim's own preview has none because it traces
-every pixel.
+each disc do: the last node before the edge still carries weight there,
+and the staircase cut it off bright. The first import of a sphere-sim
+bundle showed exactly that. sphere-sim's own preview has none because
+it traces every pixel.
 
 The grid holds enough to do better, and `projectorWarp` does
 (`edgeBand`). Near a smooth silhouette the angle a ray sweeps grows
@@ -4212,17 +4212,65 @@ times better than the staircase on all seven, on the squared weight
 error weighted by incidence, which is how an error shows on the
 sphere.
 
-What is left for the operator to see: a short step where a grid line
-runs along the edge, at the top, bottom and sides of each disc; an
-edge a few pixels off true, occasionally fifteen; and the ring of
-cells just inside the edge, which is the grid's least accurate —
-there content lands a median 5.6 px from where it belongs and up to
-28, where one ring further in the worst is 4. All three shrink with a
-finer export, which `buildWarpExport` already takes as `cols` /
-`rows`, and the exporter, which knows the silhouette exactly, could
-put it in the file for every player. Neither is code here. Nor is the
-black floor in the overlaps, where two projectors' black levels add:
-a warp file has nowhere to put it.
+**The blend's own zero line is reconstructed too.** On a rig like
+Boulder the silhouette is not the edge anyone sees. Its blend gives
+each projector a longitude sector, crossfaded over 20°, and masks both
+poles, so each projector's weight reaches zero well inside its disc:
+up to about 30 px inside the silhouette on a 1680×1050 desk monitor. A
+node past that line is written 0, and interpolated from those the
+picture ends at a node, so the visible edge follows the grid's
+columns. The second hardware import, after the silhouette work, still
+showed a staircase down each side of each disc for exactly that
+reason: one column held for 150 px of height, then a jump of about
+20. So a node written 0 beside a lit one draws with the value its lit
+neighbours' trend reaches there, which is below zero, and the shader
+clamps it (`drawnWeight`). The picture then ends where the trend
+crosses zero:
+
+- On Boulder's P3 that line lands a median 6 px of its 3840×2160
+  raster from sphere-sim's traced one (p90 11, worst 14). The
+  staircase put it a median 33 px out, and up to 88.
+- Over Boulder's four projectors, the light drawn where the blend has
+  none falls from 17k px·w to 0.11k. On the same rig as built it falls
+  from 16k to 0.43k.
+- The band past the silhouette carries the value on, so a strip beside
+  it crosses zero where the grid's cells do, not at its outer edge.
+- On the lone placed projector the zero line is its polar mask, whose
+  fall ends in a quadratic tail. There the trend lands a median 15 px
+  inside the traced line, where the staircase landed 13 outside. That
+  costs the tail's faint light and halves the light drawn past the
+  mask.
+- The other four rigs write no 0 beside a lit node, and draw as
+  before.
+
+What is left for the operator to see:
+
+- a short step where a grid line runs along the edge, at the top,
+  bottom and sides of each disc;
+- an edge a few pixels off true, occasionally fifteen;
+- the ring of cells just inside the edge, which is the grid's least
+  accurate: there content lands a median 5.6 px from where it belongs
+  and up to 28, where one ring further in the worst is 4;
+- and, where a polar mask falls between the last node and the
+  silhouette in less than a cell, a rim that stays bright to the edge.
+  Boulder's does, at the top and bottom of each disc: on a 1680×1050
+  monitor the fall takes about 14 px against a 13 px cell, and on the
+  top row the band draws 0.76 where sphere-sim's trace has 0.07. No
+  node says the mask falls there, so no trend can find it, and fading
+  every band to zero instead would halve a lone projector's rim.
+
+All four shrink with a finer export, which `buildWarpExport` already
+takes as `cols` / `rows`. The exporter, which knows the silhouette
+exactly, could put it in the file for every player, and
+[zyra-project/sphere-sim#55](https://github.com/zyra-project/sphere-sim/issues/55)
+asks it to. Its snapped ring would carry the mask's zero at the edge.
+Neither is code here. Nor is the black floor in the overlaps, where
+two projectors' black levels add: a warp file has nowhere to put it.
+
+A desktop monitor exaggerates all of these. It shows each projector's
+picture alone and gamma-encoded, so a stray weight of 0.03 reads as a
+20% grey. On the sphere the neighbouring projector fills in, and the
+same error adds 3% to its light. Judge an edge on the sphere.
 
 #### Non-goals
 
@@ -4324,6 +4372,19 @@ The sphere-sim page still exports from the install rig, so every
 bundle it writes today places SOS's quadrants. Nothing here waits on
 that, but a placed rig's bundle will not come from the page until it
 does. #50 is still open.
+
+**A third request, filed 2026-09-30:**
+[zyra-project/sphere-sim#55](https://github.com/zyra-project/sphere-sim/issues/55)
+asks the exporter to snap its outer ring of nodes onto the silhouette.
+Each snapped node would carry the weight just inside the edge: 0 where
+a neighbour or the polar mask has taken over, and the full weight where
+one projector lights its edge alone. It also asks `layout.json` to say
+the ring is snapped. That would make the reconstructed edge
+(§"What the operator will see") unnecessary for sphere-sim's bundles,
+and put a polar mask's zero on the silhouette, where no node can show
+it today. The flag is how this build would know to leave a snapped ring
+alone rather than extend past it. It ignores fields it does not know
+inside `@1`, so until it reads the flag it would try to.
 
 **Cost:** about rung 14's. The pure warp module and the ZIP reader; the
 `projector-warp` arm through protocol, aggregator and persistence; the
@@ -6826,20 +6887,30 @@ being drawn in the single pass rung 16 specifies.
 **W8. The silhouette edge.** With the pattern on, look at each
 projector's silhouette edge, above all at the polar ends of each
 disc, where it carries light. It should follow the disc's curve and
-fade out, the graticule running into the fade unbroken. Expected
-residue: a short step where a grid line runs along the edge — at the
-top, bottom and sides of each disc, half a mesh cell at most — and an
-edge a few pixels off the true silhouette. **Failure signature:** a
-staircase along the whole edge, up to a mesh cell deep (96×54 px on a
-3840×2160 raster at 41×41): the reconstruction is not running, and
-every mesh is drawn as a stock player would. A bright rim well past
-the silhouette, on the wall behind the sphere, is the band's weight
-gone wrong; a faint sliver a few pixels wide is an overshooting
-estimate, and expected. Separately, the ring of
-cells just inside the edge can put the graticule several pixels off
-across an overlap, up to 28 on Boulder's meshes, which is the grid's
-own error there; if that is objectionable, re-export from sphere-sim
-at a finer `cols` / `rows`.
+fade out, the graticule running into the fade unbroken. Where a
+crossfade hands the side of a disc to a neighbour, that projector's
+picture should end on a smooth curve inside its silhouette, where its
+blend reaches zero. Expected residue: a short step where a grid line
+runs along the edge — at the top, bottom and sides of each disc, half
+a mesh cell at most — and an edge a few pixels off the true
+silhouette. On a rig whose blend masks the poles, as Boulder's does,
+the top and bottom of each disc stay bright to the edge where the mask
+should have faded them, because the mask falls inside the last cell.
+That is expected until sphere-sim#55 or a finer export. Judge the
+edges on the sphere: a desk monitor shows each projector's picture
+alone, where a weight of 0.03 reads as a 20% grey. **Failure
+signature:** a staircase along the whole edge, up to a mesh cell deep
+(96×54 px on a 3840×2160 raster at 41×41): the reconstruction is not
+running, and every mesh is drawn as a stock player would. Steps up to
+a mesh cell wide down the sides of a disc, where its crossfade hands
+over, mean the blend's zero line is not being reconstructed. A bright
+rim well past the silhouette, on the wall behind the sphere, is the
+band's weight gone wrong; a faint sliver a few pixels wide is an
+overshooting estimate, and expected. Separately, the ring of cells
+just inside the edge can put the graticule several pixels off across
+an overlap, up to 28 on Boulder's meshes, which is the grid's own
+error there; if that is objectionable, re-export from sphere-sim at a
+finer `cols` / `rows`.
 
 **W9. Restore, a missing warp, and a downgrade.** (a) Quit and
 relaunch with restore on: the `projector-warp` output comes back on

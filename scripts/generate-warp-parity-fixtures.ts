@@ -61,6 +61,10 @@
  * lattice in every cell the silhouette crosses, kept only where a player
  * drawing complete triangles alone leaves black.
  *
+ * And the blend's zero line, which a mesh cannot state either: for every
+ * grid edge from a drawn node the exporter weighted 0 to a lit neighbour,
+ * where along it the traced weight first rises above 0, found the same way.
+ *
  * Also printed, not written: the same interpolation error measured with
  * this script's own arithmetic, independent of `projectorWarp`, per ring.
  * Those are the numbers the test's tolerances come from — setting them
@@ -210,6 +214,7 @@ async function main(): Promise<void> {
     samples: number[][]
     silhouette: number[][]
     band: number[][]
+    zeroLine: number[][]
   }[] = []
 
   const cases: { name: string; rig: SphereSimRig; projectorId: string }[] = [
@@ -356,7 +361,32 @@ async function main(): Promise<void> {
       }
     }
 
-    rigs.push({ name, file, projectorId, resX, resY, samples, silhouette, band })
+    // The blend's own zero line, which a node written 0 cannot place either:
+    // for every grid edge from a drawn node the exporter weighted 0 to a
+    // lit neighbour, where along it the traced weight first rises above 0.
+    const zeroLine: number[][] = []
+    const weightAt = (x: number, y: number): number => traced(rig, index, x, y)?.[2] ?? 0
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
+        if (!valid(at(i, j)) || at(i, j).intensity !== 0) continue
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const [pi, pj] = [i + di, j + dj]
+          if (pi < 0 || pj < 0 || pi >= cols || pj >= rows || !valid(at(pi, pj)) || !(at(pi, pj).intensity > 0)) continue
+          const [zx, zy] = pixelOf(i, j)
+          const [px, py] = pixelOf(pi, pj)
+          let lo = 0
+          let hi = 1
+          for (let k = 0; k < 40; k++) {
+            const m = (lo + hi) / 2
+            if (weightAt(zx + (px - zx) * m, zy + (py - zy) * m) > 0) hi = m
+            else lo = m
+          }
+          zeroLine.push([i, j, di, dj, round((lo + hi) / 2, 5)])
+        }
+      }
+    }
+
+    rigs.push({ name, file, projectorId, resX, resY, samples, silhouette, band, zeroLine })
     const summary = (a: number[]): string => {
       const s = [...a].sort((p, q) => p - q)
       return s.length === 0
@@ -375,6 +405,12 @@ async function main(): Promise<void> {
     console.log(
       `  silhouette: ${silhouette.length} edges, a median ${past[past.length >> 1].toFixed(2)} of a cell past the last node;` +
         ` ${band.length} band samples a staircase leaves black, weight sum ${light.toFixed(1)}`,
+    )
+    const rise = zeroLine.map((e) => e[4]).sort((p, q) => p - q)
+    console.log(
+      rise.length === 0
+        ? '  zero line: none — no drawn node weighted 0 beside a lit one'
+        : `  zero line: ${zeroLine.length} edges, the weight rising a median ${rise[rise.length >> 1].toFixed(2)} of a cell past the 0 node`,
     )
   }
 
@@ -425,7 +461,9 @@ async function main(): Promise<void> {
         "j + dj), which does not, and t the fraction of it at which the tracer's rays stop " +
         'hitting. band is [px, py, u, v, w] at points in the cells the silhouette crosses ' +
         'that complete triangles leave black, w the weight the exporter would write there. ' +
-        'Regenerate rather than edit.',
+        'zeroLine is [i, j, di, dj, t]: the grid edge from drawn node (i, j), which the exporter ' +
+        'weighted 0, to its lit neighbour (i + di, j + dj), and t the fraction of it at which the ' +
+        'traced weight first rises above 0. Regenerate rather than edit.',
     },
     sosQuadrantViewports: SOS_QUADRANT_VIEWPORTS.map((vp, i) => ({ id: `P${i + 1}`, ...vp })),
     rigs,

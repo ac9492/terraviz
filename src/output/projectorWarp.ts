@@ -57,6 +57,19 @@
  * (`edgeBand` says why each). Where a grid line runs along the edge the
  * law has nothing to read, and the crossing goes halfway.
  *
+ * **So is the blend's zero line.** A blend that reaches zero inside the
+ * picture — a sector crossfade, a polar mask — writes 0 at every node
+ * past its fall, and interpolated from those the picture ends at a
+ * node, in a staircase a cell wide down the side of each disc. Where a
+ * blend does this, as Boulder's does, that line and not the silhouette
+ * is the edge an operator sees. A 0 node beside a lit one therefore
+ * draws with the value its lit neighbours' trend reaches there, below
+ * zero, and the shader's clamp ends the picture where the trend crosses
+ * zero (`drawnWeight`). On Boulder that cuts the light drawn where the
+ * blend has none from 17k px·w to 0.11k. A fall between the last node
+ * and the silhouette is out of reach: no node says it happens, and the
+ * band carries the last node's light out towards the edge.
+ *
  * **One drop, counted.** A triangle wider than `WIDE_TRIANGLE_FACTOR`
  * times the mesh's own median width is dropped and counted for the HUD,
  * because nothing on a sphere reaches it — the widest measured on Boulder
@@ -581,10 +594,20 @@ function silhouetteStepRatio(q: number, h1: number, h2: number): number {
  * inside sphere-sim's polar mask, whose zero can fall past the last node
  * where no trend can see it, and past the sphere wherever the crossing
  * overshoots.
+ *
+ * The weights are the ones the nodes draw with (`drawnWeight`), not the
+ * file's. A node past the blend's own zero line draws below zero, and
+ * its band holds that value all the way out, the last vertex included:
+ * the band is dark whichever it carries, but a strip between it and a
+ * lit node's band then crosses zero where the grid's own cells do.
+ * Holding 0 instead lit such a strip to its outer edge, 11 px past
+ * sphere-sim's trace at a corner of Boulder's disc on a 1680×1050
+ * display.
  */
 function edgeBand(
   nodes: readonly WarpNode[],
   dirs: readonly (Vec3 | null)[],
+  weights: readonly number[],
   a: number,
   b: number,
   a1: number,
@@ -634,8 +657,8 @@ function edgeBand(
   const halfway = hB / 2
   const { q, angleAt } = law ?? { q: halfway, angleAt: (f: number) => (last * halfway * f) / h1 }
 
-  const wA = nodes[a].weight
-  const trend = Math.min(wA, Math.max(0, wA - (nodes[a1].weight - wA) * (angleAt(1) / last)))
+  const wA = weights[a]
+  const trend = Math.min(wA, Math.max(0, wA - (weights[a1] - wA) * (angleAt(1) / last)))
   const vertices = [...EDGE_BAND_LEVELS, 1].map((f): WarpVertex => {
     const s = (q * f) / hB
     const phi = angleAt(f)
@@ -645,7 +668,7 @@ function edgeBand(
       x: nodes[a].x + (nodes[b].x - nodes[a].x) * s,
       y: nodes[a].y + (nodes[b].y - nodes[a].y) * s,
       dir: { x: d0.x * c + t.x * sn, y: d0.y * c + t.y * sn, z: d0.z * c + t.z * sn },
-      weight: f === 1 ? 0 : wA + (trend - wA) * f,
+      weight: f === 1 ? Math.min(0, wA) : wA + (trend - wA) * f,
     }
   })
   return { vertices, byLaw: law !== null }
@@ -689,6 +712,64 @@ function triangleWidth([p, q, r]: VertexTri): number {
 }
 
 /**
+ * The weight node (i, j) draws with: its own, unless the blend has faded
+ * it to 0 beside a node it has not.
+ *
+ * A blend reaches zero inside a projector's picture wherever something
+ * else takes over — a sector crossfade handing the side of a disc to a
+ * neighbour, a polar mask switching a cap off — and its fall is often
+ * steeper than a cell. Interpolated from a node written 0, the picture
+ * ends at that node, so its edge follows the grid's columns and rows: on
+ * Boulder at a 1680×1050 display, one column held for 150 px of height,
+ * then a jump of about 20. So a 0 node takes the value its lit
+ * neighbours' trend reaches there instead. Along each grid line whose
+ * next two nodes rise, the line through them is continued to this node,
+ * and the lowest of those values is taken when it is below zero. Below
+ * zero is past the blend's own zero line, which `warpBlend` and
+ * `blendFactor` both clamp, so the picture ends where the trend crosses
+ * zero rather than at the node.
+ *
+ * The lowest because it puts every crossing nearest the light. Judged
+ * per pixel against sphere-sim's trace on the cells the line crosses,
+ * over the seven rigs the edge was chosen on, it beat the mean and the
+ * highest on Boulder as designed and as built, most of all on light
+ * drawn where the blend has none: on Boulder 0.11k px·w, against 0.19k
+ * and 0.44k, and 17k with no reconstruction at all. Of the other five,
+ * four write no 0 beside a lit node and draw as before. The lone placed
+ * projector writes a few, near its polar mask, where all three halve its
+ * stray light and the mean and the highest keep slightly more of the
+ * light the blend does have. Continuing the cell's split diagonal as
+ * well changed little — less light past the blend, more cut inside it —
+ * and would tie the rule to how a cell is split.
+ *
+ * The band past the silhouette reads these weights too (`edgeBand`), so
+ * the zero line carries on into it rather than stopping at the last
+ * complete cell.
+ */
+function drawnWeight(nodes: readonly WarpNode[], cols: number, rows: number, i: number, j: number): number {
+  const here = nodes[j * cols + i]
+  if (here.weight !== 0) return here.weight
+  const at = (ii: number, jj: number): WarpNode | null =>
+    ii >= 0 && jj >= 0 && ii < cols && jj < rows && nodes[jj * cols + ii].drawable ? nodes[jj * cols + ii] : null
+  let weight = 0
+  for (const [di, dj] of [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ] as const) {
+    const p = at(i + di, j + dj)
+    const p2 = at(i + 2 * di, j + 2 * dj)
+    // A line that does not rise towards the light continues above zero here.
+    if (p === null || p2 === null || !(p.weight > 0)) continue
+    const h1 = Math.hypot(p.x - here.x, p.y - here.y)
+    const h2 = Math.hypot(p2.x - p.x, p2.y - p.y)
+    weight = Math.min(weight, p.weight - (p2.weight - p.weight) * (h1 / h2))
+  }
+  return weight
+}
+
+/**
  * Build one output's geometry from its placed meshes: two triangles per
  * full cell, split along the same diagonal the plan's measurements used;
  * each cell the silhouette crosses drawn out to it (`edgeBand`); and
@@ -706,9 +787,10 @@ export function buildWarpGeometry(placed: readonly PlacedWarpMesh[]): WarpGeomet
     const { cols, rows, nodes } = mesh
     const dirs = nodes.map((n) => (n.drawable ? nodeDirection(n.u, n.v) : null))
     const drawn = (k: number): boolean => dirs[k] !== null
+    const weights = nodes.map((n, k) => (n.drawable ? drawnWeight(nodes, cols, rows, k % cols, Math.floor(k / cols)) : 0))
     const vertexOf = nodes.map((n, k): WarpVertex | null => {
       const dir = dirs[k]
-      return dir === null ? null : { x: n.x, y: n.y, dir, weight: n.weight }
+      return dir === null ? null : { x: n.x, y: n.y, dir, weight: weights[k] }
     })
 
     // The band leaving a node towards each missing neighbour, keyed by node
@@ -725,7 +807,7 @@ export function buildWarpGeometry(placed: readonly PlacedWarpMesh[]): WarpGeomet
       if (known !== undefined) return known
       const a1 = inside(i - di, j - dj) ? (j - dj) * cols + (i - di) : null
       const a2 = inside(i - 2 * di, j - 2 * dj) ? (j - 2 * dj) * cols + (i - 2 * di) : null
-      const edge = a1 === null ? null : edgeBand(nodes, dirs, a, (j + dj) * cols + (i + di), a1, a2)
+      const edge = a1 === null ? null : edgeBand(nodes, dirs, weights, a, (j + dj) * cols + (i + di), a1, a2)
       if (edge?.byLaw === true) byLaw++
       else if (edge !== null) halfway++
       const vertices = [vertexOf[a] as WarpVertex, ...(edge?.vertices ?? [])]
@@ -832,7 +914,9 @@ export interface WarpSample {
  * triangle that covers it, the direction and weight interpolated
  * linearly in screen space — which is what the rasterizer does with
  * `w = 1` — and the direction turned back into `(u, v)`. `null` where no
- * triangle covers the point: black in that projector's raster.
+ * triangle covers the point: black in that projector's raster. The
+ * weight is below zero past the blend's zero line (`drawnWeight`), as
+ * the shader's is before it clamps; `blendFactor` clamps it the same way.
  *
  * The parity fixture's instrument, and a reference for anything that
  * later needs to ask which texel a projector pixel shows. A linear scan,
