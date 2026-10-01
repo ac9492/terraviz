@@ -2411,7 +2411,8 @@ brings into the frame, where the fetch chose its mip level from a
 longitude that spins a whole turn in a few pixels. That was not
 introduced here: the old zoom-only path is worse, at 3,404 px off by
 more than 2/255 against at most 1,198. It is the fetch's fault, not
-the turn's.
+the turn's, and is fixed with the dateline's hairline in rung 16's
+convention 1, "The same at a pole".
 
 ### Fullscreen, decorationless, and kiosk modes
 
@@ -4156,6 +4157,42 @@ itself as a parsing mistake.
    steps 43 and 44, at 90° and 45°, could not have caught it. About
    half of the panel's 0.1° slider positions do show it, so a drag
    makes it blink. The same fix clears both: 0 wrong pixels.
+
+   **The same at a pole, found 2026-10-01.** A pole inside the frame
+   is the seam's pathology without the seam. Every row of an
+   equirectangular texture spans the whole turn, so round a pole
+   longitude sweeps 360° in a few pixels, and a fetch that read `u`'s
+   gradient raw took those pixels for ones covering hundreds of
+   texels. It chose the pyramid's coarsest levels, and a level is a
+   box in *both* directions, so whole bands of latitude averaged into
+   a dot on the pole. The follow turn (§3.5) brings a pole to the
+   front, where it is looked at, and that is how it was found. It
+   was there before that: tracking a high latitude put the content's
+   pole inside the frame without any turn, and so does a placed
+   projector aimed at a pole. The measurement used content whose
+   colour encodes each texel's own direction, checked against the TS
+   mirror. Followed onto Antarctica at zoom 2, the worst pixel on the
+   pole read the colour of 35°S, 48 levels off, and 170 pixels were
+   off by more than 8. The old zoom-only path onto the same place was
+   off by up to 107, with 776 pixels past 8.
+
+   **Fixed** in the same function: after the seam choice, `u`'s
+   gradient is scaled by the row's length at that latitude, cos(lat)
+   (`rowScaledGradientU`), so a level is chosen for the distance the
+   pixel covers on the sphere. Nothing finer is lost, because a row
+   near a pole is a few degrees of circle stretched across the whole
+   texture width. An unturned frame changes no level at all.
+
+   | Case | Worst, before → after | Pixels > 8 off, before → after |
+   |---|---|---|
+   | Followed onto Antarctica, zoom 2 | 48 → 3.2 | 170 → 0 |
+   | 45°S 179°W, near the zoom cap | 96 → 4.1 | 154 → 0 |
+   | The north pole at the front | 24 → 0.9 | 144 → 0 |
+   | Old zoom-only path, onto Antarctica | 107 → 5.1 | 776 → 0 |
+   | The warp, against the frame under the same turn | p99.9 8.9 → 1.8 | 208 → 32 |
+
+   The warp's 32 are the triangle-edge pixels its harness always
+   showed (36 before the turn existed).
 2. **Blend gamma.** sphere-sim's weight multiplies radiance **in linear
    light** and is encoded afterwards (its conventions.ts §B, clause 4,
    restated in `blend.ts`). This scene writes display-space values —
@@ -6954,7 +6991,9 @@ close into rings round it and the meridians converge on one
 point. **Failure signature:** a wedge or a fan of smeared
 texture round the pole, or the pole's cells missing — a build
 that interpolates `(u, v)` and either smears those triangles or
-drops them. On a site with only an SOS rig, record this half as
+drops them. A soft dot of averaged colour on the pole itself is a
+different fault: the fetch choosing its level from longitude
+(convention 1, "The same at a pole"). On a site with only an SOS rig, record this half as
 not run rather than passed.
 
 **W4. Overlap brightness.** The flat grey comes from the
@@ -6992,12 +7031,14 @@ and the scale is continuous across every seam. Then toggle
 split: the (0°, 0°) crosshair appears twice, 180° apart on the
 physical sphere. Toggle it off and pan to (−80°, 0°): Antarctica
 turns to the front with its pole just below, the parallels
-closing into rings round it. **Failure
+closing into rings round it, sharp to the pole itself. **Failure
 signature:** the zoom's scale jumping at a seam, which one window
 drawing every viewport from one set of uniforms should make
-impossible. If the pan does not turn the sphere at all, read the
-HUD's `link` before blaming the warp: an output that is not
-hearing the control window cannot follow it.
+impossible. A soft dot of averaged colour on the pole is the
+fetch choosing its level from longitude (convention 1). If the pan
+does not turn the sphere at all, read the HUD's `link` before
+blaming the warp: an output that is not hearing the control window
+cannot follow it.
 
 **W7. Motion across a seam.** Play a moving video dataset —
 clouds, or an SST animation — and watch one seam for a minute.

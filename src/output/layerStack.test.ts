@@ -15,11 +15,14 @@ import { describe, it, expect } from 'vitest'
 import { latLonToTexelUv } from '../services/datasetProbe'
 import {
   IDENTITY_ORIENTATION,
+  IDENTITY_PARAMS,
   MAX_CAMERA_OFFSET,
   cameraOffsetForCamera,
   equirectSourceUv,
+  followCamera,
   rayUnitSphereT,
   latLonToDirection,
+  type EquirectParams,
 } from './equirectRtt'
 import type { DatasetOverlayOptions } from '../types'
 import {
@@ -38,6 +41,7 @@ import {
   OVERLAY_SAMPLE_GLSL,
   EQUIRECT_GRADIENT_GLSL,
   overlayGradientScale,
+  rowScaledGradientU,
   seamFreeGradientU,
 } from './layerStack'
 
@@ -955,10 +959,103 @@ describe('the fetch has no seam at the dateline', () => {
     expect(EQUIRECT_GRADIENT_GLSL).toContain(
       'if (abs(altX) + abs(altY) < abs(gradX.x) + abs(gradY.x)) {',
     )
+    // The row scaling, after the choice: the choice compares raw
+    // gradients, and scaling both sides by one factor first would change
+    // nothing but the order the reader has to check.
+    const choice = EQUIRECT_GRADIENT_GLSL.indexOf('gradY.x = altY;')
+    const scale = EQUIRECT_GRADIENT_GLSL.indexOf('float rowLength = sin(uv.y * 3.14159265358979);')
+    expect(scale).toBeGreaterThan(choice)
+    expect(EQUIRECT_GRADIENT_GLSL.slice(scale)).toContain('gradX.x *= rowLength;')
+    expect(EQUIRECT_GRADIENT_GLSL.slice(scale)).toContain('gradY.x *= rowLength;')
     expect(OVERLAY_SAMPLE_GLSL).toContain(
       'gradScale = vec2(360.0 / span, 180.0 / max(bn - bs, 1e-6));',
     )
     expect(OVERLAY_SAMPLE_GLSL).toContain('gradScale.y = -gradScale.y;')
+  })
+})
+
+describe('a pole in view is fetched at its own resolution', () => {
+  // Every row of an equirectangular texture spans the whole turn, so
+  // near a pole a step in u is a short step on the sphere. Read raw, u's
+  // gradient took a pole inside the frame for a pixel covering hundreds
+  // of texels — longitude sweeps a whole turn round it in a few pixels —
+  // and the fetch chose the pyramid's coarsest levels, whose boxes span
+  // latitude too. On WebGL the worst pixel at Antarctica's pole read the
+  // colour of 35°S.
+
+  const fract = (x: number): number => x - Math.floor(x)
+  const W = 2048
+  const H = 1024
+
+  it('scales u by the row’s length: whole at the equator, none at a pole', () => {
+    const g = { x: 0.01, y: -0.02 }
+    expect(rowScaledGradientU(g, 0.5)).toEqual(g)
+    // 60° north: the row is half the equator's length.
+    const sixty = rowScaledGradientU(g, 60 / 180 + 0.5)
+    expect(sixty.x).toBeCloseTo(0.005, 12)
+    expect(sixty.y).toBeCloseTo(-0.01, 12)
+    for (const v of [0, 1]) {
+      expect(rowScaledGradientU(g, v).x).toBeCloseTo(0, 12)
+      expect(rowScaledGradientU(g, v).y).toBeCloseTo(0, 12)
+    }
+  })
+
+  /** The level a fetch picks at one pixel of a 2048×1024 frame over a
+   *  texture the same size, as the GPU does: log₂ of the longer gradient
+   *  in texels, with u's taken as the shader takes it. */
+  const levelAt = (params: EquirectParams, x: number, y: number, scaled: boolean): number => {
+    const at = (px: number, py: number) => equirectSourceUv((px + 0.5) / W, (py + 0.5) / H, params)
+    const a = at(x, y)
+    const bx = at(x + 1, y)
+    const by = at(x, y + 1)
+    let gu = seamFreeGradientU(
+      { x: bx.u - a.u, y: by.u - a.u },
+      { x: fract(bx.u + 0.5) - fract(a.u + 0.5), y: fract(by.u + 0.5) - fract(a.u + 0.5) },
+    )
+    if (scaled) gu = rowScaledGradientU(gu, a.v)
+    const gv = { x: bx.v - a.v, y: by.v - a.v }
+    return Math.log2(Math.max(Math.hypot(gu.x * W, gv.x * H), Math.hypot(gu.y * W, gv.y * H)))
+  }
+
+  it.each([
+    // Followed onto Antarctica: the pole sits just below the front.
+    ['Antarctica, zoomed', { ...IDENTITY_PARAMS, ...followCamera(-80, 0, 2, 0) }],
+    // The north pole turned to the front itself, unzoomed.
+    ['the north pole at the front', { ...IDENTITY_PARAMS, ...followCamera(90, 0, 0, 0) }],
+  ])('picks the level of the pixels round it, not the pyramid’s top: %s', (_name, params) => {
+    // Find the pixel the content's pole lands on.
+    let pole = { d: Infinity, x: 0, y: 0 }
+    for (let y = 1; y < H - 2; y++) {
+      for (let x = 960; x < 1088; x++) {
+        const uv = equirectSourceUv((x + 0.5) / W, (y + 0.5) / H, params)
+        const d = Math.min(uv.v, 1 - uv.v)
+        if (d < pole.d) pole = { d, x, y }
+      }
+    }
+    let raw = -Infinity
+    let scaled = -Infinity
+    for (let dy = -4; dy <= 4; dy++) {
+      for (let dx = -4; dx <= 4; dx++) {
+        raw = Math.max(raw, levelAt(params, pole.x + dx, pole.y + dy, false))
+        scaled = Math.max(scaled, levelAt(params, pole.x + dx, pole.y + dy, true))
+      }
+    }
+    const round = Math.max(
+      ...[[-40, 0], [40, 0], [0, -40], [0, 40]].map(([dx, dy]) => levelAt(params, pole.x + dx, pole.y + dy, true)),
+    )
+    // What shipped: within a few levels of a single texel for the whole
+    // texture, which is a hemisphere's average.
+    expect(raw).toBeGreaterThan(round + 5)
+    // Now: the level of a pixel forty away, give or take one.
+    expect(scaled).toBeLessThan(round + 1)
+  })
+
+  it('changes no level on an unturned frame', () => {
+    // Away from the frame's edge rows, a centred, unturned frame puts
+    // every pixel at one texel both ways, scaled or not.
+    for (const [x, y] of [[100, 512], [1500, 100], [700, 950], [2000, 30]]) {
+      expect(levelAt(IDENTITY_PARAMS, x, y, true)).toBeCloseTo(levelAt(IDENTITY_PARAMS, x, y, false), 9)
+    }
   })
 })
 

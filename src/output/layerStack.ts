@@ -535,6 +535,12 @@ export function overlaySampleUv(
  * `texture2DGradEXT`, which Three maps to `textureGrad` for the GLSL ES
  * 3.00 it compiles. The coordinate itself is untouched, so every mirror
  * of *where* a texel lands still holds.
+ *
+ * u's gradient is then scaled by the row's length at that latitude
+ * (`rowScaledGradientU`), the same pathology at a pole instead of a
+ * seam: round a pole inside the frame, longitude sweeps a whole turn in
+ * a few pixels, and read raw that chose the pyramid's coarsest levels
+ * and blurred whole bands of latitude into a dot on the pole.
  */
 export const EQUIRECT_GRADIENT_GLSL = `
 void equirectGradients(vec2 uv, out vec2 gradX, out vec2 gradY) {
@@ -547,6 +553,9 @@ void equirectGradients(vec2 uv, out vec2 gradX, out vec2 gradY) {
     gradX.x = altX;
     gradY.x = altY;
   }
+  float rowLength = sin(uv.y * 3.14159265358979);
+  gradX.x *= rowLength;
+  gradY.x *= rowLength;
 }
 `.trim()
 
@@ -568,6 +577,33 @@ export function seamFreeGradientU(
   return Math.abs(alt.x) + Math.abs(alt.y) < Math.abs(direct.x) + Math.abs(direct.y)
     ? alt
     : direct
+}
+
+/**
+ * u's gradient as a distance on the sphere rather than a share of a
+ * row: scaled by the row's length at that latitude, `cos(latitude)`,
+ * which is `sin(π·v)` — the second half of `EQUIRECT_GRADIENT_GLSL`,
+ * applied after `seamFreeGradientU` has chosen.
+ *
+ * Every row of an equirectangular texture spans the whole turn, so near
+ * a pole a step in u is a short step on the sphere, and a fetch that
+ * read u's gradient raw took a pole inside the frame for a pixel
+ * covering hundreds of texels. Round the pole longitude sweeps a whole
+ * turn in a few pixels, so the fetch chose the pyramid's coarsest
+ * levels — and a level is a box in both directions, so it averaged
+ * whole bands of *latitude* into a dot at the pole. Measured on WebGL,
+ * the worst pixel at Antarctica's pole read the colour of 35°S.
+ *
+ * Nothing finer is lost by the scaling: a row near a pole is that row's
+ * few degrees of circle stretched across the whole texture width, so a
+ * level chosen for the distance the pixel covers holds everything the
+ * image has there. Where a pixel covers the same distance both ways —
+ * anywhere on an unturned frame, where this changes no level at all —
+ * the two gradients now agree, which is what an isotropic level needs.
+ */
+export function rowScaledGradientU(grad: { x: number; y: number }, v: number): { x: number; y: number } {
+  const rowLength = Math.sin(v * Math.PI)
+  return { x: grad.x * rowLength, y: grad.y * rowLength }
 }
 
 /**
