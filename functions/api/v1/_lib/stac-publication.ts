@@ -8,7 +8,7 @@ import { readStacPublicationInput } from './stac-publication-store'
 import { verifyStacAssets } from './stac-assets'
 import { computeEtag } from './snapshot'
 import type { StacCatalog, StacCollection } from './stac-types'
-import { historyModels, linkHistoryRevisions, mergeHistoryCollections } from './stac-history'
+import { historyMatchesDataset, historyModels, linkHistoryRevisions, mergeHistoryCollections } from './stac-history'
 import { evaluateTemporal } from './metadata-readiness'
 
 export interface StacPublication {
@@ -50,7 +50,7 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
   if (!model.node) throw new Error('Missing node identity')
   const branding = model.branding
   if (branding) model.node.publicOrgName = branding.org_name
-  const seed = JSON.stringify({ version: 7, operatorReport: options.operatorReport === true, model, r2: env.R2_PUBLIC_BASE ?? null, origins: env.STAC_ASSET_ORIGINS ?? null })
+  const seed = JSON.stringify({ version: 8, operatorReport: options.operatorReport === true, model, r2: env.R2_PUBLIC_BASE ?? null, origins: env.STAC_ASSET_ORIGINS ?? null })
   const key = `stac:publication:v1:${(await computeEtag(seed)).replace(/"/g, '')}`
   if (env.CATALOG_KV && !options.operatorReport) {
     try {
@@ -72,6 +72,14 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
     const publications = [...(historyByDataset.get(dataset.row.id) ?? [])]
       .sort((first, second) => Date.parse(first.captured_at) - Date.parse(second.captured_at) || first.id.localeCompare(second.id))
     if (!publications.length) return [dataset]
+    if (!historyMatchesDataset(publications.at(-1)!, dataset)) {
+      const entry = { id: dataset.row.id, included: false, reasons: ['history_stale'], items_included: 0,
+        items_total: dataset.publicationKind === 'workflow' ? publications.filter(publication => publication.kind === 'revision').length + 1
+          : dataset.row.frame_count ?? 0 }
+      report.push(entry)
+      reportById.set(entry.id, entry)
+      return []
+    }
     // Saved Items replace the live Item; only the latest frame set is public. Collection descriptions stay live.
     const latestFrames = publications.filter(publication => publication.kind === 'frame').at(-1)
     const historical = publications.filter(publication => publication.kind === 'revision' || publication === latestFrames)

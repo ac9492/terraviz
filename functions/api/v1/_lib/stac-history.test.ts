@@ -14,10 +14,10 @@ import { clearTranscoding } from './asset-uploads'
 describe('immutable STAC history', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  function sequenceFixture() {
-    const fixture = stacRouteFixture()
+  function sequenceFixture(count = 1) {
+    const fixture = stacRouteFixture(count)
     fixture.sqlite.exec(`UPDATE datasets SET slug='frame-sequence', frame_count=2, frame_extension='png',
-      frame_source_filenames_ref='r2:manifest.json', period='P1D', format='video/mp4'`)
+      frame_source_filenames_ref='r2:manifest.json', period='P1D', format='video/mp4' WHERE id='${fixture.ids[0]}'`)
     const manifest = [{ index: 0, filename: 'one.png', digest: `sha256:${'a'.repeat(64)}` },
       { index: 1, filename: 'two.png', digest: `sha256:${'b'.repeat(64)}` }]
     const env: CatalogEnv = { ...fixture.env, STAC_HISTORY_CAPTURE: 'true', R2_PUBLIC_BASE: 'https://data.example',
@@ -42,7 +42,7 @@ describe('immutable STAC history', () => {
       expect(await collections.json()).toMatchObject({ collections: [expect.objectContaining({ id: first.products[0].collection!.id })] })
       expect((await publishDataset(env, ids[0])).ok).toBe(true)
       expect((await readStacPublication(env)).products.map(product => product.item!.id)).toEqual(itemIds)
-      sqlite.exec("UPDATE datasets SET start_time='2020-01-01T00:00:00Z', title='New title', slug='new-slug'")
+      sqlite.exec("UPDATE datasets SET title='New title', slug='new-slug'")
       const later = await readStacPublication(env)
       expect(later.products.map(product => product.item)).toEqual(first.products.map(product => product.item))
       expect(later.products[0].collection!.title).toBe('New title')
@@ -61,10 +61,33 @@ describe('immutable STAC history', () => {
       expect((await publishDataset({ ...env, STAC_ENABLED: undefined, STAC_HISTORY_CAPTURE: undefined }, ids[0])).ok).toBe(true)
       expect(get).not.toHaveBeenCalled()
       expect((await publishDataset(env, ids[0])).ok).toBe(true)
-      expect(warning).toHaveBeenCalled()
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('capture unavailable'), 'STAC frame manifest is missing or inconsistent')
       expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 0 })
     } finally { warning.mockRestore(); sqlite.close() }
   })
+
+  it.each(["frame_source_filenames_ref='r2:new-manifest.json'", "start_time='2026-01-02T00:00:00Z', end_time='2026-01-03T00:00:00Z'"])(
+    'withholds stale frames after skipped capture and recovers after recapture: %s', async change => {
+      const { sqlite, ids, env } = sequenceFixture()
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'content-type': 'image/png' } })))
+      try {
+        await publishDataset(env, ids[0])
+        const first = await readStacPublication(env)
+        sqlite.exec(`UPDATE datasets SET ${change}`)
+        expect((await publishDataset({ ...env, STAC_HISTORY_CAPTURE: undefined }, ids[0])).ok).toBe(true)
+        vi.mocked(fetch).mockClear()
+        for (const operatorReport of [false, true]) {
+          const stale = await readStacPublication(env, { operatorReport })
+          expect(stale.products).toEqual([])
+          expect(stale.catalog.links.some(link => link.rel === 'child')).toBe(false)
+          expect(stale.report).toEqual([{ id: ids[0], included: false, reasons: ['history_stale'], items_included: 0, items_total: 2 }])
+        }
+        expect(fetch).not.toHaveBeenCalled()
+        expect((await serveStac(new Request(`https://node.example/api/v1/stac/items/${first.products[0].item!.id}`), env)).status).toBe(404)
+        await publishDataset(env, ids[0])
+        expect((await readStacPublication(env)).products).toHaveLength(2)
+      } finally { sqlite.close() }
+    })
 
   it.each(['image/jpeg', 'failure'])('does not capture unverified frame assets: %s', async result => {
     const { sqlite, ids, env } = sequenceFixture()
@@ -77,6 +100,37 @@ describe('immutable STAC history', () => {
     } finally { warning.mockRestore(); sqlite.close() }
   })
 
+  it.each(['disabled', 'missing', 'probe', 'transaction', 'concurrent'] as const)(
+    'isolates stale frame history after %s capture without blocking native publication', async scenario => {
+      const { sqlite, ids, env } = sequenceFixture(2)
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'content-type': 'image/png' } })))
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const batch = vi.spyOn(env.CATALOG_DB!, 'batch')
+      try {
+        await publishDataset(env, ids[0])
+        const first = await readStacPublication(env)
+        sqlite.prepare('UPDATE datasets SET frame_source_filenames_ref=? WHERE id=?').run('r2:new-manifest.json', ids[0])
+        if (scenario === 'missing') vi.mocked(env.CATALOG_R2!.get).mockResolvedValueOnce(null)
+        if (scenario === 'probe') vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 503 }))
+        if (scenario === 'transaction') batch.mockRejectedValueOnce(new Error('History storage unavailable'))
+        if (scenario === 'concurrent') vi.mocked(fetch).mockImplementationOnce(async () => {
+          sqlite.prepare("UPDATE datasets SET abstract='Concurrent edit' WHERE id=?").run(ids[0])
+          return new Response(null, { headers: { 'content-type': 'image/png' } })
+        })
+        const captureEnv = scenario === 'disabled' ? { ...env, STAC_HISTORY_CAPTURE: undefined } : env
+        expect((await publishDataset(captureEnv, ids[0])).ok).toBe(true)
+        for (const operatorReport of [false, true]) {
+          const result = await readStacPublication(env, { operatorReport })
+          expect(result.products.map(product => product.item!.id)).toEqual([ids[1]])
+          expect(result.report).toContainEqual({ id: ids[0], included: false, reasons: ['history_stale'], items_included: 0, items_total: 2 })
+        }
+        expect((await serveStac(new Request(`https://node.example/api/v1/stac/items/${first.products[0].item!.id}`), env)).status).toBe(404)
+        expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 1 })
+        await publishDataset(env, ids[0])
+        expect((await readStacPublication(env)).products).toHaveLength(3)
+      } finally { batch.mockRestore(); warning.mockRestore(); sqlite.close() }
+    })
+
   it('retries the native write if optional history storage fails atomically', async () => {
     const { sqlite, ids, env } = sequenceFixture()
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -85,7 +139,7 @@ describe('immutable STAC history', () => {
     try {
       expect((await publishDataset(env, ids[0])).ok).toBe(true)
       expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 0 })
-      expect(warning).toHaveBeenCalled()
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('history transaction failed'), 'History storage unavailable')
     } finally { batch.mockRestore(); warning.mockRestore(); sqlite.close() }
   })
 
@@ -174,6 +228,12 @@ describe('immutable STAC history', () => {
       expect(first.products).toHaveLength(1)
       expect(first.products[0].item!.id).toContain('-revision-')
       expect(first.products[0].item!.assets.data).not.toHaveProperty('file:checksum')
+      sqlite.exec("UPDATE datasets SET title='Corrected workflow title', abstract='Corrected description'")
+      expect((await publishDataset(configured, ids[0])).ok).toBe(true)
+      const corrected = await readStacPublication(configured)
+      expect(corrected.products[0].item).toEqual(first.products[0].item)
+      expect(corrected.products[0].collection!.title).toBe('Corrected workflow title')
+      expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 1 })
       const secondUpload = '01ARZ3NDEKTSV4RRFFQ69G5FAW'
       sqlite.prepare('UPDATE datasets SET data_ref=?, start_time=?, end_time=?').run(
         `r2:videos/${ids[0]}/${secondUpload}/master.m3u8`, '2026-01-03T00:00:00Z', '2026-01-04T00:00:00Z')
@@ -200,6 +260,16 @@ describe('immutable STAC history', () => {
       expect(await prepareWorkflowHistory(configured, { ...current, data_ref: 'url:https://data.example/latest.mp4' }, now)).toBeNull()
       expect(await prepareWorkflowHistory(configured, { ...current, transcoding: 1 }, now)).toBeNull()
       expect(await prepareWorkflowHistory(configured, { ...current, visibility: 'private' }, now)).toBeNull()
+      sqlite.prepare('UPDATE datasets SET data_ref=?').run(`r2:videos/${ids[0]}/01ARZ3NDEKTSV4RRFFQ69G5FAX/master.m3u8`)
+      expect((await publishDataset({ ...configured, STAC_HISTORY_CAPTURE: undefined }, ids[0])).ok).toBe(true)
+      for (const operatorReport of [false, true]) {
+        const stale = await readStacPublication(configured, { operatorReport })
+        expect(stale.products).toEqual([])
+        expect(stale.report).toEqual([{ id: ids[0], included: false, reasons: ['history_stale'], items_included: 0, items_total: 3 }])
+      }
+      expect((await serveStac(new Request(`https://node.example/api/v1/stac/items/${oldItem.id}`), configured)).status).toBe(404)
+      await publishDataset(configured, ids[0])
+      expect((await readStacPublication(configured)).products).toHaveLength(3)
     } finally { sqlite.close() }
   })
 

@@ -21,6 +21,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { onRequestPost as transcodeComplete } from './transcode-complete'
 import { asD1, makeKV, seedFixtures } from '../../../_lib/test-helpers'
 import type { PublisherRow } from '../../../_lib/publisher-store'
+import { publishDataset } from '../../../_lib/dataset-mutations'
+import { readStacPublication } from '../../../_lib/stac-publication'
+import { serveStac } from '../../../_lib/stac-http'
+import { stacRouteFixture } from '../../../_lib/stac-test-helpers'
 
 const ADMIN: PublisherRow = {
   id: 'PUB-ADMIN',
@@ -173,6 +177,63 @@ async function readJson<T>(res: Response): Promise<T> {
 }
 
 describe('POST .../transcode-complete — happy path', () => {
+  it.each(['metadata', 'transaction', 'disabled'] as const)(
+    'withholds old workflow revisions when the next callback skips capture: %s', async scenario => {
+      const { sqlite, ids, env } = stacRouteFixture()
+      const datasetId = ids[0], uploadId = UPLOAD_ID
+      const configured = { ...env, STAC_ENABLED: 'true', STAC_HISTORY_CAPTURE: 'true', R2_PUBLIC_BASE: 'https://data.example' }
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'content-type': 'application/vnd.apple.mpegurl' } })))
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        sqlite.exec(`INSERT INTO publishers (id,email,display_name,role,status,created_at)
+          VALUES ('${ADMIN.id}','admin@example.com','Admin','admin','active','2026-01-01');
+          INSERT INTO asset_uploads (id,dataset_id,publisher_id,kind,target,target_ref,mime,declared_size,claimed_digest,status,created_at)
+          VALUES ('${uploadId}','${datasetId}','${ADMIN.id}','data','r2','r2:uploads/${datasetId}/${uploadId}/source.mp4',
+            'video/mp4',1000,'${DEFAULT_SOURCE_DIGEST}','completed','2026-01-01');
+          INSERT INTO workflows (id,publisher_id,name,pipeline_json,metadata_template,schedule,target_dataset_id,created_at,updated_at)
+          VALUES ('WF','${ADMIN.id}','Recurring','{}','{}','P1D','${datasetId}','2026-01-01','2026-01-01');
+          UPDATE datasets SET title='Workflow output', abstract='Measured field', slug='workflow-output', format='video/mp4',
+          visibility='public', is_hidden=0, retracted_at=NULL, transcoding=NULL, active_transcode_upload_id=NULL, thumbnail_ref=NULL,
+          published_at='2026-01-01T00:00:00Z', resource_kind='product', content_digest=NULL, source_digest='${DEFAULT_SOURCE_DIGEST}', license_spdx='CC0-1.0',
+          temporal_semantics='represented', temporal_evidence='Source metadata',
+          bbox_provenance='measured', bbox_evidence='Source metadata', bbox_n=30, bbox_s=-30, bbox_w=-60, bbox_e=60,
+          start_time='2026-01-01T00:00:00Z', end_time='2026-01-02T00:00:00Z',
+          data_ref='r2:videos/${datasetId}/01ARZ3NDEKTSV4RRFFQ69G5FAV/master.m3u8'`)
+        expect((await publishDataset(configured, datasetId)).ok).toBe(true)
+        const first = await readStacPublication(configured)
+        expect(first.report).toEqual([{ id: datasetId, included: true, reasons: [], items_included: 1, items_total: 1 }])
+        expect(first.products).toHaveLength(1)
+        sqlite.prepare(`UPDATE datasets SET transcoding=1, active_transcode_upload_id=?,
+          start_time='2026-02-01T00:00:00Z', end_time='2026-02-02T00:00:00Z'`).run(uploadId)
+        const originalBatch = env.CATALOG_DB.batch.bind(env.CATALOG_DB)
+        const batch = vi.spyOn(env.CATALOG_DB, 'batch')
+        if (scenario === 'transaction') batch.mockRejectedValueOnce(new Error('History transaction unavailable'))
+        if (scenario === 'metadata') batch.mockImplementationOnce(async statements => {
+          sqlite.exec("UPDATE datasets SET abstract='Concurrent correction', updated_at='2026-10-01T12:00:00Z'")
+          return originalBatch(statements)
+        })
+        try {
+          const response = await transcodeComplete(ctx({ env: { ...configured,
+            STAC_HISTORY_CAPTURE: scenario === 'disabled' ? undefined : 'true' }, datasetId,
+            body: { upload_id: uploadId, source_digest: DEFAULT_SOURCE_DIGEST } }))
+          expect(response.status).toBe(200)
+          expect(await response.json()).toMatchObject({ dataset: { transcoding: null,
+            data_ref: `r2:videos/${datasetId}/${uploadId}/master.m3u8` } })
+          expect(sqlite.prepare('SELECT count(*) AS total FROM stac_history_publications').get()).toEqual({ total: 1 })
+          for (const operatorReport of [false, true]) {
+            const stale = await readStacPublication(configured, { operatorReport })
+            expect(stale.products).toEqual([])
+            expect(stale.report).toEqual([{ id: datasetId, included: false, reasons: ['history_stale'], items_included: 0, items_total: 2 }])
+          }
+          expect((await serveStac(new Request(`https://node.example/api/v1/stac/items/${first.products[0].item!.id}`), configured)).status).toBe(404)
+        } finally { batch.mockRestore() }
+        expect((await publishDataset(configured, datasetId)).ok).toBe(true)
+        const recovered = await readStacPublication(configured)
+        expect(recovered.products).toHaveLength(2)
+        expect(recovered.report[0].reasons).toEqual([])
+      } finally { warning.mockRestore(); vi.unstubAllGlobals(); sqlite.close() }
+    })
+
   it.each(['superseded', 'metadata', 'missing', 'disabled', 'verified'] as const)(
     'preserves native completion semantics during history capture: %s', async scenario => {
       const { sqlite, datasetId, uploadId, env } = setupEnv({ uploadMime: 'image/png', uploadFrameCount: 2,

@@ -34,6 +34,23 @@ export interface StacHistoryPublication {
   items: StacHistoryItem[]
 }
 
+const scientificFields = ['id', 'origin_node', 'resource_kind', 'celestial_body', 'start_time', 'end_time', 'period',
+  'temporal_semantics', 'temporal_evidence', 'bbox_n', 'bbox_s', 'bbox_e', 'bbox_w', 'bbox_provenance', 'bbox_evidence',
+  'lon_origin', 'is_flipped_in_y', 'render_encoding', 'color_scale', 'probing_info', 'frame_extension'] as const
+
+function historyIdentity(row: DatasetRow, kind: StacHistoryPublication['kind']): Record<string, unknown> {
+  const fields = [...scientificFields, 'data_ref', 'content_digest', 'source_digest', 'format',
+    ...(kind === 'frame' ? ['frame_count', 'frame_source_filenames_ref'] as const : [])] as const
+  return Object.fromEntries(fields.map(key => [key, row[key]]))
+}
+
+export function historyMatchesDataset(publication: StacHistoryPublication, dataset: StacDatasetReadModel): boolean {
+  const saved = (JSON.parse(publication.model_json) as StacDatasetReadModel).row
+  const row = dataset.row
+  if ((publication.kind === 'revision') !== (dataset.publicationKind === 'workflow')) return false
+  return JSON.stringify(historyIdentity(saved, publication.kind)) === JSON.stringify(historyIdentity(row, publication.kind))
+}
+
 export function historyModels(publication: StacHistoryPublication, parent: DatasetRow, decorations?: DecorationRows): StacDatasetReadModel[] {
   const model = JSON.parse(publication.model_json) as StacDatasetReadModel
   const verified = new Map(model.verifiedFrameAssets?.map(asset => [asset.sourceRef, asset]))
@@ -72,15 +89,12 @@ export async function prepareFrameHistory(env: CatalogEnv, row: DatasetRow, capt
   }
   const snapshot = { ...model, row: { ...model.row, ...row }, renditions: [],
     verifiedFrameAssets: await verifyFrameAssets(env, frames) }
-  const scientificFields = ['id', 'origin_node', 'resource_kind', 'celestial_body', 'start_time', 'end_time', 'period',
-    'temporal_semantics', 'temporal_evidence', 'bbox_n', 'bbox_s', 'bbox_e', 'bbox_w', 'bbox_provenance', 'bbox_evidence',
-    'lon_origin', 'is_flipped_in_y', 'render_encoding', 'color_scale', 'probing_info', 'frame_extension'] as const
-  const sourceKey = (await computeEtag(JSON.stringify({ scientific: Object.fromEntries(scientificFields.map(key => [key, row[key]])),
+  const sourceKey = (await computeEtag(JSON.stringify({ scientific: historyIdentity(row, 'frame'),
     frames }))).replace(/"/g, '')
   const id = `frames-${sourceKey}`
   return { id, dataset_id: row.id, kind: 'frame', source_key: sourceKey,
     model_json: JSON.stringify(snapshot), captured_at: capturedAt,
-    items: frames.map(frame => ({ ...frame, id: `${sourceKey}-${frame.ordinal}` })) }
+    items: frames.map(frame => ({ ...frame, id: `frame-${sourceKey}-${frame.ordinal}` })) }
 }
 
 export async function prepareWorkflowHistory(env: CatalogEnv, row: DatasetRow, capturedAt: string): Promise<StacHistoryPublication | null> {
@@ -93,24 +107,27 @@ export async function prepareWorkflowHistory(env: CatalogEnv, row: DatasetRow, c
   const model = input.datasets.find(dataset => dataset.row.id === row.id)
   if (model?.publicationKind !== 'workflow') return null
   const snapshot: StacDatasetReadModel = { ...model, row: { ...model.row, ...row }, renditions: [] }
-  const sourceKey = (await computeEtag(JSON.stringify({ asset: bundle?.[1] ?? content![1], snapshot: {
-    ...snapshot, row: { ...snapshot.row, updated_at: null, published_at: null, retracted_at: null },
-  } }))).replace(/"/g, '')
+  const sourceKey = (await computeEtag(JSON.stringify(historyIdentity(row, 'revision')))).replace(/"/g, '')
   return { id: `revision-${sourceKey}`, dataset_id: row.id, kind: 'revision', source_key: sourceKey,
-    model_json: JSON.stringify(snapshot), captured_at: capturedAt, items: [{ id: sourceKey, ordinal: 0,
+    model_json: JSON.stringify(snapshot), captured_at: capturedAt, items: [{ id: `revision-${sourceKey}`, ordinal: 0,
       data_ref: row.data_ref, content_digest: bundle ? '' : row.content_digest!, format: row.format,
       start_time: row.start_time!, end_time: row.end_time! }] }
 }
 
 export async function prepareHistory(env: CatalogEnv, row: DatasetRow, capturedAt: string): Promise<StacHistoryPublication | null> {
   try { return await prepareFrameHistory(env, row, capturedAt) ?? await prepareWorkflowHistory(env, row, capturedAt) }
-  catch { console.warn('[stac-history] capture unavailable; native publication continues'); return null }
+  catch (error) {
+    console.warn('[stac-history] capture unavailable; native publication continues:', error instanceof Error ? error.message : String(error))
+    return null
+  }
 }
 
 export async function writeWithHistory(db: D1Database, statement: D1PreparedStatement, history: D1PreparedStatement[]): Promise<number> {
   if (history.length) {
     try { return (await db.batch([...history, statement])).at(-1)!.meta.changes }
-    catch { console.warn('[stac-history] history transaction failed; retrying native write without history') }
+    catch (error) {
+      console.warn('[stac-history] history transaction failed; retrying native write without history:', error instanceof Error ? error.message : String(error))
+    }
   }
   return (await statement.run()).meta.changes
 }

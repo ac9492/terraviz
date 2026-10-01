@@ -1,8 +1,8 @@
 # Phase 3: Atomic History
 
 **Status:** Implemented; deployment and operator backfill pending
-**Last reviewed:** 2026-09-29
-**Revisit when:** Asset hosting/origin policy or history retention/deletion policy changes.
+**Last reviewed:** 2026-10-01
+**Revisit when:** Asset hosting/origin policy, Workers quotas, callback timeouts, or history retention/deletion policy changes.
 
 One DCO-signed commit corresponds to each numbered step in the
 [metadata plan](README.md#phase-3-atomic-history).
@@ -19,7 +19,8 @@ content-addressed R2 keys. Publication persists IDs and timestamps rather than
 deriving them during public reads. Identical repeated publication is idempotent;
 changed scientific metadata or frame content creates a new snapshot. Frame keys
 cover represented time/cadence, extent and its evidence, geographic orientation,
-encoding/scale, and ordered frame digests. Titles, abstracts, tags, rights and
+encoding/scale, asset refs/digests/format, frame manifest ref/count, and ordered
+frame digests. Titles, abstracts, tags, rights and
 other descriptive corrections do not mint a second set of frame Items.
 
 Capture requires `STAC_HISTORY_CAPTURE=true`, independently of `STAC_ENABLED`.
@@ -32,11 +33,31 @@ a synthetic CHECK failure. Joined aliases cannot become SQL identifiers.
 The transcode UPDATE retains its active-upload guard: a superseded callback
 returns the existing 409 and writes no history. A concurrent metadata edit lets
 native completion proceed without a stale snapshot. Missing/inconsistent
-manifests, failed verification and capture reads are logged and skip capture.
+manifests, failed verification and capture reads are logged with their error
+message and skip capture.
 If the optional history transaction fails, its atomic rollback is followed by
 the original native write without history. Native write failures still surface;
 they are not reported as successful. Invalid or untimestamped sequences remain
 native-only.
+
+Before projecting history, the reader compares the latest saved publication's
+asset and scientific identity with the current row, using the same fields as
+capture keys. Revision comparisons include `data_ref`, content/source digest,
+format and scientific fields; frame comparisons also include the manifest ref
+and frame count. Manifest refs must identify immutable source sets. Descriptive
+corrections do not make history stale. A changed identity without a matching
+latest capture excludes that dataset's entire history and Collection, including
+direct Item URLs (404), with `history_stale` in the operator report. Other
+datasets remain available. The check uses the fresh primary-backed read and is
+a cache dependency, so a previously cached snapshot cannot hide the mismatch.
+Missing manifests, failed HEADs, storage failures, concurrent edits, or disabling
+capture can therefore leave an honest gap, never an old run advertised as current.
+The report records zero included Items; its total is the declared current frame
+count, or stored revision count plus the uncaptured current revision. These are
+expected candidate counts, not proof that the new assets have passed verification.
+Restore capture prerequisites and explicitly republish the current dataset to
+capture the missing state; a retry of an already-completed transcode callback
+alone is idempotent and does not backfill history. Then rerun the report and audit.
 
 The public projection reads snapshots with current parent visibility in its
 primary-backed transaction. Private, restricted, hidden, draft and retracted
@@ -96,8 +117,13 @@ run bundle as their revision Item; non-workflow sequences use per-frame Items.
 
 Run success alone is not publication: the runner can finish while transcoding
 continues, and a no-data soft pass can succeed without an upload. Neither event
-creates history. Repeated publication of identical content and metadata reuses
-the saved identity; a new upload or changed metadata creates a new revision.
+creates history. Both revisions and frame sets use asset plus scientific identity,
+not the whole descriptive snapshot. Repeated publication of identical assets and
+scientific fields reuses the saved identity; a title, abstract, keyword or rights
+correction does not create a revision or predecessor/successor pair for the same
+data. A new upload or changed scientific metadata creates a new revision.
+New Item IDs have a kind prefix so even a hash beginning with `-` or `_` is a valid
+persisted identifier. Previously stored IDs and snapshots are never rewritten.
 No history is inferred from old workflow-run logs. Operators must retain the
 upload-specific bundles and content-addressed assets for historical Items to
 remain reachable. The existing reachability and count-budget checks still apply.
@@ -179,3 +205,37 @@ Immutable assets must be retained: persisted verification records a successful
 capture, not a continuous availability guarantee. Run periodic reachability
 audits, and withdraw affected parents if immutable objects are removed. No STAC
 API, Processing, or Versioning extension conformance is advertised by this change.
+
+### Capture Budget And Client Latency
+
+Capture is synchronous inside publish and transcode completion. The 30-second
+deadline bounds frame HEAD verification, not the entire HTTP request: manifest
+reads, D1 work and response handling add time. The runner's
+`postTranscodeComplete` in `cli/transcode-from-dispatch.ts` uses `fetch` without
+an application-level abort timer, so it does not impose a shorter timeout.
+That is not an end-to-end timeout guarantee: verify the runner, proxy/Access
+path, browser publisher client and job timeout on staging with a slow capture
+before enabling it. Keep the caller connected for at least 30 seconds plus
+measured non-probe overhead. No production timeout or account plan was changed
+or assumed verified by this PR.
+
+The 10,000-distinct-frame code cap is **not** a supported deployment ceiling.
+The [Workers limits](https://developers.cloudflare.com/workers/platform/limits/#subrequests)
+checked on 2026-10-01 list 50 external subrequests for Free and a configurable
+10,000 default for Paid; internal-service limits and other requests also need
+headroom. Confirm the actual deployed plan and configured quota. A Free plan
+cannot capture hundreds of distinct frames in one invocation. Even on Paid,
+do not allocate the entire invocation budget to frame HEADs.
+
+Although the pool starts up to 16 tasks, Workers allows only six connections
+waiting for headers at once; excess requests queue. The practical frame-count
+ceiling is below the minimum of 10,000, the remaining subrequest allowance, and
+`effective concurrency * 30 seconds / measured mean HEAD latency`, with margin
+for tails and queueing (each task has a 3-second timeout). At six effective
+connections, 500 distinct frames require roughly 360 ms mean latency or better;
+3,650 require roughly 49 ms, before overhead. These are optimistic throughput
+bounds, not guarantees. Benchmark representative sequences on the target node,
+record an operational frame-count ceiling, and keep capture disabled there
+until its largest sequence fits. Larger histories need a separately designed
+background verification path, not larger synchronous budgets. Check for
+`history_stale` after any skipped recapture and recover as described above.
