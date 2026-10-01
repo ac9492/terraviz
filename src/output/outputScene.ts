@@ -863,6 +863,12 @@ export async function createOutputScene(
         (options.params ?? IDENTITY_PARAMS).cameraOffset.z,
       ),
     },
+    // `set` takes its nine arguments row-major, which is how
+    // `EquirectParams.orientation` is laid out; Three stores and uploads
+    // column-major, as a GLSL `mat3` expects.
+    [EQUIRECT_UNIFORMS.orientation]: {
+      value: new THREE_.Matrix3().set(...(options.params ?? IDENTITY_PARAMS).orientation),
+    },
     [EQUIRECT_UNIFORMS.split]: { value: (options.params ?? IDENTITY_PARAMS).split },
     [EQUIRECT_UNIFORMS.rotationOffset]: {
       value: (options.params ?? IDENTITY_PARAMS).rotationOffsetRad,
@@ -1057,6 +1063,12 @@ export async function createOutputScene(
         set: (x: number, y: number, z: number) => void
       }
       offset.set(params.cameraOffset.x, params.cameraOffset.y, params.cameraOffset.z)
+      // Written in place, as the offset above is, so a camera move — one
+      // per control-window frame during a drag — allocates nothing.
+      const orientation = uniforms[EQUIRECT_UNIFORMS.orientation].value as {
+        set: (...m: EquirectParams['orientation']) => unknown
+      }
+      orientation.set(...params.orientation)
       uniforms[EQUIRECT_UNIFORMS.split].value = params.split
       // Rung 14. A uniform write, not a shader rebuild: the rotation is
       // a scalar the fragment shader already reads, so an operator

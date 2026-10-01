@@ -14,6 +14,7 @@
 import { describe, it, expect } from 'vitest'
 import { latLonToTexelUv } from '../services/datasetProbe'
 import {
+  IDENTITY_ORIENTATION,
   MAX_CAMERA_OFFSET,
   cameraOffsetForCamera,
   equirectSourceUv,
@@ -867,7 +868,7 @@ describe('the fetch has no seam at the dateline', () => {
     // the one a pixel further from it.
     const W = 2048
     const H = 1024
-    const params = { cameraOffset, split: false, rotationOffsetRad }
+    const params = { cameraOffset, orientation: IDENTITY_ORIENTATION, split: false, rotationOffsetRad }
     const u = (x: number, r: number): number =>
       equirectSourceUv((x + 0.5) / W, (r + 0.5) / H, params).u
     let seam = -1

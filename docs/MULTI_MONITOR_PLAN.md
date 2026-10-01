@@ -892,7 +892,8 @@ broadcast as a diff whenever it changes. v1 captures:
 | `layers[]` (stacked-layer ids and z-order) | new `layerStack` state in `main.ts` | layer add / remove / reorder |
 | `time.simulationDate` | playback engine | date label tick |
 | `view.dayNight` (toggle on/off) | Tools menu | toggle change |
-| `view.cameraOffset` (Vector3) | Manager (computed from MapLibre camera) | default-on for SOS LED sphere outputs in v1; can be disabled per output. Pinned to `(0,0,0)` when tracking is off, which produces a uniform 1:1 equirectangular unwrap. See §3.5. |
+| `view.cameraOffset` (Vector3) | Manager (computed from MapLibre camera) | default-on for SOS LED sphere outputs in v1; can be disabled per output. Points at the sphere's front, in the sphere's frame, with the operator's zoom. Pinned to `(0,0,0)` when tracking is off, which produces a uniform 1:1 equirectangular unwrap. See §3.5. |
+| `view.orientation` (3×3 rotation) | Manager (computed from MapLibre centre and bearing) | The turn that brings the operator's centre round to the sphere's front, their way up. Identity when tracking is off. See §3.5 "Following the operator". |
 | `view.split` (boolean) | Outputs panel toggle | per-output flag. When on, the area of focus is mirrored to the opposite hemisphere of the physical LED sphere — matches existing SOS sphere-split behavior. See §3.5. |
 
 #### Carry the overlay bundle, don't re-derive it
@@ -977,16 +978,17 @@ shows the exact predicate to copy:
 `!!overlay?.boundingBox && isEarthBody(overlay.celestialBody)`.
 
 The SOS output **does** track the operator's MapLibre camera
-by default in v1: zooming in the control window concentrates
-pixels around the area of focus on the LED sphere, the rest
-of the globe compresses on the antipodal side. This is the
+by default in v1: panning the control window turns the sphere
+so the area of focus faces its front, and zooming concentrates
+pixels around it there while the rest of the globe compresses
+on the antipodal side (§3.5, "Following the operator"). This is the
 expected operator workflow on existing SOS installations and
 visitors read it intuitively — see §3.5 for the math and the
 per-mode defaults table. An operator who wants the LED sphere
 to remain a 1:1 representation regardless of where they pan
 the control window flips the per-output "Track operator
-camera" toggle off; the cameraOffset pins to zero and the
-output renders a uniform equirect.
+camera" toggle off; the cameraOffset pins to zero, the turn
+to the identity, and the output renders a uniform equirect.
 
 The control window keeps its own independent MapLibre camera
 as today — `cameraOffset` is a derived broadcast, not a
@@ -1001,7 +1003,7 @@ two-way binding.
 | `src/services/multiOutput/stateAggregator.ts` | Subscribes to dataset / playback / layer / time / view events, builds the state snapshot, emits diffs |
 | `src/ui/outputUI.ts` | Tools → Outputs panel — list current outputs, "Add output" button, per-output config menu (monitor, mode, "Track operator camera" toggle, "Split sphere" toggle, "Rotation offset (°)" numeric + slider, "Calibration" submenu with test-pattern selector, debug overlay), per-output health badge (healthy / stale / stalled / monitor-missing — see "Failure recovery") |
 | `src/output/main.ts` | Output window entry. Creates Three.js renderer, builds `photorealEarth` scene + dataset overlay + layer stack, runs equirect RTT each frame, displays to a full-bleed canvas. Wires `webglcontextlost` / `webglcontextrestored` listeners and an IPC-silence watchdog (5 s tolerance, stale state thereafter — see "Failure recovery") |
-| `src/output/equirectRtt.ts` | Equirectangular render-to-texture pass — single fragment shader. Applies the per-output `uRotationOffsetRad` longitude rotation first (see "Calibration tooling"), then raycasts from a configurable camera offset (`uCameraOffset`, derived from the operator's MapLibre camera by default; see §3.5) at every (lon, lat) of the output framebuffer. Supports split mode (`uSplit`) that mirrors the area of focus to the antipodal hemisphere of the LED sphere. |
+| `src/output/equirectRtt.ts` | Equirectangular render-to-texture pass — single fragment shader. Applies the per-output `uRotationOffsetRad` longitude rotation first (see "Calibration tooling"), then raycasts from a configurable camera offset (`uCameraOffset`, derived from the operator's MapLibre camera by default; see §3.5) at every (lon, lat) of the output framebuffer, then turns the landing point by `uOrientation`, which brings the operator's centre to the front (§3.5, "Following the operator"). Supports split mode (`uSplit`) that mirrors the area of focus to the antipodal hemisphere of the LED sphere. |
 | `src/output/datasetMirror.ts` | Output-side companion to control-window `datasetLoader` — given a `dataset.url` + `dataset.kind` + `dataset.bbox`, builds a Three.js texture (image or HLS-driven VideoTexture) and a UV transform. Owns the playback sync seam (feeds `computeSiblingSyncCorrection` and the read-back verification layer — see "Playback sync algorithm") and the single stream rebuild on a `loadStream()` rejection, freezing the last good frame throughout (see "Failure recovery"; there is deliberately no retry ladder here — `hlsService` owns that). ~~Recognises the `__terraviz_calibration__` sentinel dataset id and renders a procedural test pattern (~80 lines of GLSL) instead of fetching content~~ — superseded: the test pattern is `src/output/calibrationPattern.ts`, a canvas on the render-config channel, and this module knows nothing about it (see "Calibration tooling") |
 | `src/output/calibrationPattern.ts` | The calibration test pattern (rung 14b) — a 2:1 canvas of graticule, colour bars, grayscale ramp, anchor crosshairs, longitude scale, pole letters and a live framebuffer readout, installed in an ordinary overlay slot so it travels the same sampling path a dataset does. Pure geometry in normalised image-space UV plus a thin painter; pinned against `datasetProbe.latLonToTexelUv` (see "Calibration tooling") |
 | `src/output/layerStack.ts` | Builds the dataset overlay and layer stack the equirect pass composites — bbox clipping, the `lonOrigin` shift, `isFlippedInY`, and the data-encoded palette LUT, folded into `equirectRtt`'s fragment shader by `buildOutputFragmentShader`. Layers composite in array order inside that one shader, so there is no shell stack and no depth buffer. Slots are unrolled at build time (GLSL ES 1.00 has no dynamic sampler indexing) and capped at `MAX_OUTPUT_LAYERS` |
@@ -1190,9 +1192,10 @@ of truth.
    ray-march's hit point on the unit sphere *is* the normal,
    so the terminator is one dot product against it.
 4. Render the layer composite to the equirect framebuffer
-   with the current `uCameraOffset` uniform (derived from the
-   operator's MapLibre camera when "Track operator camera" is
-   on for this output; `vec3(0)` when off) and `uSplit` flag.
+   with the current `uCameraOffset` and `uOrientation` uniforms
+   (derived from the operator's MapLibre camera when "Track
+   operator camera" is on for this output; `vec3(0)` and the
+   identity when off) and `uSplit` flag.
 5. Blit the framebuffer to the visible canvas (single
    `gl.blitFramebuffer` call, GPU-local — no CPU readback).
 
@@ -2273,6 +2276,10 @@ The 0.85 cap prevents the camera from approaching the sphere
 surface, where the warp becomes degenerate (a single source
 texel would smear across most of the LED sphere).
 
+The zoom factor and the cap are as shipped. The *direction* is not:
+the camera now points at the sphere's front, and a turn brings the
+operator's centre there — see "Following the operator" below.
+
 **Split mode.** Existing SOS spheres also expose a "split"
 option that mirrors the zoomed area of focus to the opposite
 hemisphere of the physical sphere — visitors standing on either
@@ -2311,6 +2318,100 @@ Per-mode defaults:
 | **SOS LED sphere** (v1) | Default **on** | Yes | Matches existing SOS sphere behavior. Operator can disable tracking for "always-1:1 globe" idle displays. |
 | **Dome / fisheye** (Phase 2) | Default on | N/A (single-audience surface) | Smoothing filter added in Phase 2 to avoid jitter as the operator pans. |
 | **Presenter / mirrored** (Phase 4) | Always on | No | Audience sees exactly what the presenter is looking at; split would confuse a flat-screen audience. |
+
+#### Following the operator: the centre comes to the front
+
+**Status: landed with rung 16; supersedes the camera's direction in
+the V1 mapping above.** The mapping aimed the camera at the
+operator's centre wherever it lay, so the zoom magnified that place
+*where it already was* on the sphere. The rotation offset turns
+longitude only, so nothing could move latitude: a pole was only ever
+magnified at the top or bottom of the sphere. A dome's audience does
+not look there, an SOS sphere's top is seen at a glancing angle from
+below, and on a projector rig with a polar mask (Boulder's) it may
+be lit by nobody. The first projector-rig session found exactly
+that: the control globe zoomed onto Antarctica, and none of P1–P4
+showed it.
+
+SOS answers this with its remote. Pitch, yaw and roll turn the globe
+about a "user position" until the place of interest faces the
+audience. Here the control globe is that remote. With **Track
+operator camera** on, an output turns its content so the point the
+control globe is centred on faces the sphere's **front**, with the
+control globe's way up — MapLibre's bearing, which a right-drag or a
+two-finger twist changes. The zoom then magnifies the front. Pitch is
+not taken: it tilts a viewer, and a sphere is seen from every side.
+
+The turn is one rotation matrix `M` applied to the ray-march's
+landing point, after the march and before the texel:
+
+```
+hit = M · (o + t·dir)        // o, dir and t all in the sphere's frame
+M   = B_centre · B_frontᵀ    // B = [position | up | right] at a point
+```
+
+`B_front` is the identity's own axes. The front is latitude 0 on the
+meridian the rotation offset names, and its frame is
+(`x` position, `y` north, `z` east). `B_centre` is the operator's
+centre, with up as the compass direction `bearing` and right a
+quarter-turn clockwise from it. Building it from frames rather than
+angles leaves neither pole a special case. Both bases are the same
+embedding's own (position, north, east), so `M` is a rotation by
+construction. That matters because `latLonToDirection` is the mirror
+image of a right-handed Earth, and a hand-written turn can silently
+come out with determinant −1: every coastline backwards, plausibly
+enough that nobody in the room is sure.
+
+Three consequences are deliberate:
+
+- **The camera offset lives in the sphere's frame** and points at the
+  front, `cameraOffsetForCamera(0, 0, zoom)`. A pan changes only the
+  turn, and the zoom can never magnify a place nobody is facing. The
+  turn and the zoom come from one call, `followCamera`, because they
+  are one invariant: the zoom must magnify the point the turn put at
+  the front.
+- **The rotation offset now says where the front is.** It is still
+  the same uniform, applied the same way. With tracking off it puts
+  the content's prime meridian at that meridian, as before. With
+  tracking on it puts the operator's centre there. In both cases it
+  says where on the physical sphere the content's reference point
+  lands, so an installation's calibration means the same thing either
+  way. Split puts the area of focus at exactly U = 0.25 and 0.75 (plus
+  the offset), wherever the operator is, where it used to be true
+  only at longitude 0.
+- **The calibration pattern follows like a dataset** (step 41): it
+  travels the dataset's path, the turn included. To set the front,
+  centre the control globe on a pattern anchor — (0°, 0°), north up,
+  is the natural one — and turn the rotation offset until that anchor
+  faces the audience.
+
+The default camera, (0°, 0°) at zoom 0 with bearing 0, derives to the
+identity turn and a centred camera *exactly*, so a freshly booted
+output still opens on the uniform unwrap. `projector-warp` takes the
+same parameters, so the turn runs behind its meshes unchanged.
+
+Verified on real WebGL (SwiftShader, the real `outputScene`) with
+content whose every texel's colour encodes its own direction, so the
+colour each output pixel should carry follows analytically from
+`equirectSourceUv`. Five followed cameras were checked: Antarctica,
+the control globe's default view with a 30° offset, a split frame
+with the bearing at −120°, the north pole, and 45°S 179°W near the
+zoom cap.
+
+- On all five, the median error is 0.4/255 and the 99.9th percentile
+  at most 1.2/255.
+- The turn uploaded transposed puts the median at 183/255, and
+  mirrored at 58/255.
+- The warp, compared with the equirect frame under the same turn as
+  the original harness compared them with none, covers the same
+  195,374 px, with 0 lit where the mirror predicts nothing.
+
+The outliers sit in a disc round each content pole that the turn
+brings into the frame, where the fetch chose its mip level from a
+longitude that spins a whole turn in a few pixels. That was not
+introduced here: the old zoom-only path is worse, at 3,404 px off by
+more than 2/255 against at most 1,198. It is the fetch's fault, not
+the turn's.
 
 ### Fullscreen, decorationless, and kiosk modes
 
@@ -6460,16 +6561,26 @@ for the app not needing it.
 
 15. **Track operator camera ON (default).** In the control
     window, zoom in on a hurricane (~zoom level 5). The
-    output's equirect should show the AOI filling more of
-    the sphere; the antipode should compress visibly. Pan
-    around — the tracking should follow with ≤30 ms lag.
+    sphere turns the hurricane to its front — on the
+    equator, at the meridian the rotation offset names —
+    and the AOI fills more of the sphere there; the
+    antipode should compress visibly. Pan around — the
+    sphere should turn with ≤30 ms lag. Pan to Antarctica:
+    the pole comes round to the front, as it sits on the
+    control globe. Right-drag to twist the control globe:
+    the picture at the front twists with it. **Failure
+    signature:** the AOI magnified where it lies rather than
+    at the front — the pole at the bottom of the sphere —
+    which is a build without the turn.
 16. **Track operator camera OFF.** Toggle off in the per-
     output config. The output snaps back to a uniform 1:1
-    equirect regardless of where the operator pans.
+    equirect, unturned, regardless of where the operator
+    pans.
 17. **Split sphere ON.** Toggle on. The current AOI now
     appears at U=0.25 and U=0.75 of the equirect (visible
-    as two copies of the area of focus). Toggle off:
-    returns to single AOI.
+    as two copies of the area of focus, each facing its
+    own front, 180° apart). Toggle off: returns to single
+    AOI.
 
 **Teardown:**
 
@@ -6649,9 +6760,10 @@ telemetry event fires (visible in the console batch when
     180,0" crosshair compresses on the other side. Confirms
     that camera tracking applies to the pattern just like
     a regular dataset. Then zoom in at lon=90°E/lat=0
-    instead: the antimeridian, which the lon=0 zoom leaves
-    on the frame's edge, now runs through the frame, and
-    its anchor line should be unbroken. **Failure
+    instead: the 90°E crosshair turns to the front, and the
+    antimeridian, which the lon=0 view leaves on the frame's
+    edge, now runs through the frame a quarter-turn east of
+    it. Its anchor line should be unbroken. **Failure
     signature:** a dashed line of one flat colour along it,
     the pattern's average — the fetch choosing its mip
     level across the `atan` jump. Reproduced and fixed
@@ -6878,9 +6990,14 @@ operator camera on. Zoom the control globe in on (0°, 0°): the
 centre crosshair grows on the sphere, the antipode compresses,
 and the scale is continuous across every seam. Then toggle
 split: the (0°, 0°) crosshair appears twice, 180° apart on the
-physical sphere. **Failure signature:** the zoom's scale jumping
-at a seam, which one window drawing every viewport from one set
-of uniforms should make impossible.
+physical sphere. Toggle it off and pan to (−80°, 0°): Antarctica
+turns to the front with its pole just below, the parallels
+closing into rings round it. **Failure
+signature:** the zoom's scale jumping at a seam, which one window
+drawing every viewport from one set of uniforms should make
+impossible. If the pan does not turn the sphere at all, read the
+HUD's `link` before blaming the warp: an output that is not
+hearing the control window cannot follow it.
 
 **W7. Motion across a seam.** Play a moving video dataset —
 clouds, or an SST animation — and watch one seam for a minute.

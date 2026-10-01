@@ -181,6 +181,21 @@ is invisible with no way to tell which.
 leave no display flagged at all. The panel reports what the
 platform says rather than guessing.
 
+**Track operator camera** is on for a new output, and it makes the
+control globe the sphere's remote. Wherever you centre the control
+globe, the sphere turns so that place faces its **front**, the same
+way up as on the control globe, and your zoom magnifies it there.
+This is how a pole reaches an audience: drag the control globe to
+Antarctica and Antarctica comes round to the front, on the equator.
+A right-drag or a two-finger twist on the control globe turns the
+picture on the sphere too. Tilting the control globe does not.
+
+The front is latitude 0 on the meridian the **rotation offset**
+names (§3.4), so the rotation decides which side of the sphere faces
+the room. With tracking off, the sphere shows a fixed map — the
+prime meridian at that same meridian, unzoomed — whatever you do on
+the control globe.
+
 ### 3.2 Framebuffer is not monitor resolution
 
 The panel shows two numbers and they are different things:
@@ -239,7 +254,11 @@ Two controls, used together and in this order:
    dataset will.
 2. **Rotation offset** — turns the projection to match how the
    sphere is physically mounted. Drag the slider while watching
-   the sphere; type a number to reproduce a known value.
+   the sphere; type a number to reproduce a known value. With
+   **Track operator camera** on, it says which side of the sphere
+   is the front: the side the control globe's centre turns to.
+   Centre the control globe on (0°, 0°), north up, and turn the
+   offset until the pattern's centre crosshair faces the room.
 
 Calibration is done **one sphere at a time** — a four-output rig
 is four differently-mounted spheres, and the pattern appears only
@@ -409,7 +428,8 @@ limit, and the import then says there is no room rather than
 keeping part of it.
 
 **Track operator camera** and **Split sphere** work through the
-warp as they do on an LED sphere.
+warp as they do on an LED sphere (§3.1). The front is where the warp
+puts the middle of its texture, turned by the content rotation.
 
 #### Set the blend gamma
 

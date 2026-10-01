@@ -169,6 +169,7 @@ export function outputInitialState(mode: OutputMode = DEFAULT_OUTPUT_MODE): Outp
       // later in-place write would edit the shader's own constant.
       params: {
         cameraOffset: { ...IDENTITY_PARAMS.cameraOffset },
+        orientation: [...IDENTITY_PARAMS.orientation],
         split: IDENTITY_PARAMS.split,
         rotationOffsetRad: IDENTITY_PARAMS.rotationOffsetRad,
       },

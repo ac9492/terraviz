@@ -34,7 +34,7 @@ import {
   type OutputWarpMesh,
   type OutputStateMessage,
 } from './protocol'
-import { IDENTITY_PARAMS, type EquirectParams } from '../../output/equirectRtt'
+import { IDENTITY_ORIENTATION, IDENTITY_PARAMS, type EquirectParams } from '../../output/equirectRtt'
 import { type WarpSetEntry } from '../../output/projectorWarp'
 
 describe('window labels', () => {
@@ -122,7 +122,7 @@ describe('isFullState', () => {
     view: {
       mode: 'sos-equirect',
       dayNight: true,
-      params: { cameraOffset: { x: 0, y: 0, z: 0 }, split: false, rotationOffsetRad: 0 },
+      params: { cameraOffset: { x: 0, y: 0, z: 0 }, orientation: IDENTITY_ORIENTATION, split: false, rotationOffsetRad: 0 },
     },
   }
 

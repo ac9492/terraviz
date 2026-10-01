@@ -28,7 +28,7 @@
  *
  * **The view is projected per output, not stored per output.** What is
  * stored is `SharedView` — `dayNight` plus the operator's own
- * `camera` (MapLibre lat/lon/zoom). What an output receives is a
+ * `camera` (MapLibre lat/lon/zoom/bearing). What an output receives is a
  * `MirroredView` arm, built at the send boundary by `projectView` from
  * that shared camera, the output's `OutputViewSettings` and its
  * `OutputMode`.
@@ -72,7 +72,7 @@ import {
 // and `publisher`, and never fires the import. Check the markers
 // (`sos-equirect`, `uCameraOffset` — both absent from
 // `dist/assets/main-*.js`), never chunk filenames.
-import { cameraOffsetForCamera } from '../../output/equirectRtt'
+import { IDENTITY_ORIENTATION, followCamera } from '../../output/equirectRtt'
 // Shared with the output's own store rather than defined here: both
 // ends must give the same answer to "did this change?", and the cost
 // of disagreeing is an output rebuilding its HLS instance on every
@@ -85,18 +85,18 @@ import { hasOwn, sameValue } from './stateEquality'
 export const CENTRED_CAMERA = { x: 0, y: 0, z: 0 } as const
 
 /**
- * The operator camera an app starts with: the whole globe, unzoomed.
+ * The operator camera an app starts with: the whole globe, unzoomed,
+ * north up.
  *
- * `zoom: 0` is load-bearing rather than a placeholder. `sos-equirect`'s
- * derivation is `1 − 1/(zoom + 1)`, which is exactly `0` there, so this
- * camera produces `CENTRED_CAMERA` — the uniform 1:1 unwrap — without
- * that identity being written twice. `lat`/`lon` are then irrelevant to
- * the result, which is why any values will do for them; `0, 0` is
- * simply the least surprising pair to read. A mode added later gets the
- * same guarantee for free if its own derivation is centred at zoom 0,
- * and a test pins the equirect half of it.
+ * Every value is load-bearing rather than a placeholder. `sos-equirect`'s
+ * zoom derivation is `1 − 1/(zoom + 1)`, which is exactly `0` at
+ * `zoom: 0`, so this camera produces `CENTRED_CAMERA`; and the turn that
+ * brings `(0, 0)` to the front north-up is the identity — together, the
+ * uniform 1:1 unwrap, without that identity being written twice. A mode
+ * added later gets the same guarantee for free if its own derivation is
+ * the identity here, and a test pins the equirect half of it.
  */
-export const DEFAULT_OPERATOR_CAMERA: OperatorCamera = { lat: 0, lon: 0, zoom: 0 }
+export const DEFAULT_OPERATOR_CAMERA: OperatorCamera = { lat: 0, lon: 0, zoom: 0, bearing: 0 }
 
 /**
  * The state before anything has loaded.
@@ -138,8 +138,10 @@ export function initialState(): MirroredGlobeState {
  * meshes, so it takes every field here, `split` included.
  */
 export interface OutputViewSettings {
-  /** When false, this output gets `CENTRED_CAMERA` regardless of where
-   *  the operator has panned. */
+  /** When true, this output follows the operator's camera: their centre
+   *  is turned to face the sphere's front, their way up, and their zoom
+   *  magnifies it there. When false it gets `CENTRED_CAMERA` and no
+   *  turn, regardless of where the operator has panned. */
   trackCamera: boolean
   /** Mirror the area of focus to the antipodal hemisphere.
    *  `sos-equirect` only — see `MirroredEquirectParams`. */
@@ -174,10 +176,10 @@ export const DEFAULT_VIEW_SETTINGS: OutputViewSettings = {
  *
  * This is where the operator's camera becomes a *geometry's* camera,
  * and it is the only place that conversion happens. The shared view
- * holds `OperatorCamera` — MapLibre's own lat/lon/zoom — so no mode is
- * privileged: `sos-equirect` derives a ray-march origin from it here,
- * and a mode added later derives its own thing from the same three
- * numbers rather than from equirect's answer.
+ * holds `OperatorCamera` — MapLibre's own lat/lon/zoom/bearing — so no
+ * mode is privileged: `sos-equirect` derives a turn and a ray-march
+ * origin from it here, and a mode added later derives its own thing
+ * from the same four numbers rather than from equirect's answer.
  *
  * **`mode` is an argument, not a property of `shared`.** The arm an
  * output receives is a property of *that output*; the shared state has
@@ -220,14 +222,19 @@ export function projectView(
  * the ray-march's answer reaches the glass.
  */
 function rayMarchParams(shared: SharedView, settings: OutputViewSettings): MirroredEquirectParams {
+  // Derived here, once per output, from the one shared camera — rather
+  // than derived once and stored, which would be a second copy of the
+  // same fact, or derived by each output, which would be N copies of the
+  // same code. The turn and the zoom come from one call because they are
+  // one invariant: the zoom must magnify the point the turn put at the
+  // front.
+  const { lat, lon, zoom, bearing } = shared.camera
+  const followed = settings.trackCamera ? followCamera(lat, lon, zoom, bearing) : null
   return {
-    // Derived here, once per output, from the one shared camera —
-    // rather than derived once and stored, which would be a second copy
-    // of the same fact, or derived by each output, which would be N
-    // copies of the same code.
-    cameraOffset: settings.trackCamera
-      ? cameraOffsetForCamera(shared.camera.lat, shared.camera.lon, shared.camera.zoom)
-      : { ...CENTRED_CAMERA },
+    cameraOffset: followed ? followed.cameraOffset : { ...CENTRED_CAMERA },
+    // Copied for `CENTRED_CAMERA`'s reason: the constant is
+    // module-scoped, and a value handed out is a value someone can write.
+    orientation: followed ? followed.orientation : [...IDENTITY_ORIENTATION],
     split: settings.split,
     // The one place degrees become radians. A non-finite stored value
     // resolves to no rotation rather than reaching the shader as a NaN

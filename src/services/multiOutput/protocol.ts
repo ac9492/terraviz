@@ -293,7 +293,7 @@ export interface MirroredLayer {
  * `sos-equirect`'s renderer parameters — the payload of that arm of
  * `MirroredView`.
  *
- * Both fields are properties of *that projection* rather than of
+ * Two of its fields are properties of *that projection* rather than of
  * outputs in general:
  *
  * - `cameraOffset` is bounded by `MAX_CAMERA_OFFSET` because the
@@ -320,16 +320,32 @@ export interface MirroredLayer {
  */
 export interface MirroredEquirectParams {
   /**
-   * Derived from the operator's MapLibre camera, so zooming the control
-   * window concentrates pixels around the area of focus on the sphere.
-   * Pinned to `(0, 0, 0)` when the per-output "Track operator camera"
-   * toggle is off, which produces a uniform 1:1 equirectangular unwrap.
+   * Derived from the operator's MapLibre zoom, so zooming the control
+   * window concentrates pixels around the sphere's **front**, where
+   * `orientation` has brought the area of focus. In the sphere's frame,
+   * so it moves toward the front whatever is turned to face it. Pinned
+   * to `(0, 0, 0)` when the per-output "Track operator camera" toggle is
+   * off, which produces a uniform 1:1 equirectangular unwrap.
    *
    * A plain triple rather than a `THREE.Vector3`: this crosses a
    * structured-clone boundary, and the output bundle owns the only
    * Three.js import.
    */
   cameraOffset: { x: number; y: number; z: number }
+  /**
+   * The turn from the sphere's frame to the content's, row-major, so
+   * the operator's centre faces the sphere's front with the control
+   * globe's way up — how a pole is brought round to where an audience
+   * can see it (`equirectRtt.followOrientation`). Identity when the
+   * output does not track the operator's camera.
+   *
+   * Nine numbers rather than the camera's lat/lon/bearing, because this
+   * object is the renderer's: a narrowed output uploads it as it comes,
+   * and deriving it on the output would put a second implementation of
+   * the turn in every window, free to disagree with the one the tests
+   * pin.
+   */
+  orientation: readonly [number, number, number, number, number, number, number, number, number]
   /** Mirror the area of focus to the antipodal hemisphere — matches
    *  existing SOS sphere-split behaviour. Per-output. */
   split: boolean
@@ -441,12 +457,13 @@ type _EveryArmIsAMode = AssertNoneMissing<Exclude<MirroredView['mode'], OutputMo
  *
  * These are MapLibre's numbers, unconverted, and that is the point: the
  * operator drives one globe with one camera, and *every* output
- * geometry is a function of it. `sos-equirect` turns it into a
+ * geometry is a function of it. `sos-equirect` turns it into a turn
+ * that brings the operator's centre to the sphere's front and a
  * ray-march origin inside the unit sphere; a perspective mode would
- * turn the same three numbers into an eye position and a field of
- * view; a warped projector rig would feed it to a mesh. None of those
- * is more canonical than another, so the shared state holds the input
- * rather than any one mode's output.
+ * turn the same numbers into an eye position and a field of view; a
+ * warped projector rig runs `sos-equirect`'s answer behind its meshes.
+ * None of those is more canonical than another, so the shared state
+ * holds the input rather than any one mode's output.
  *
  * This replaced storing `sos-equirect`'s own `cameraOffset` as the
  * shared value. That worked — the offset is invertible, `|o|` recovers
@@ -465,6 +482,14 @@ export interface OperatorCamera {
   /** MapLibre zoom. `0` is the whole globe, and derives to a centred
    *  camera in every mode — see `DEFAULT_OPERATOR_CAMERA`. */
   zoom: number
+  /**
+   * MapLibre bearing, degrees in (−180, 180]: the compass direction at
+   * the top of the control globe. The control globe turns on a
+   * right-drag or a two-finger twist, and an output following it shows
+   * that same way up. Pitch is deliberately absent — it tilts a viewer,
+   * and no output geometry has a viewer to tilt.
+   */
+  bearing: number
 }
 
 /**

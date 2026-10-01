@@ -27,7 +27,7 @@ import {
   type StateKey,
 } from './outputLink'
 import { DEFAULT_OUTPUT_MODE, IPC_ORPHAN_MS, IPC_STALE_MS } from '../services/multiOutput/protocol'
-import { IDENTITY_PARAMS } from './equirectRtt'
+import { IDENTITY_ORIENTATION, IDENTITY_PARAMS } from './equirectRtt'
 import {
   OUTPUT_EVENT,
   OUTPUT_REATTACH_EVENT,
@@ -219,7 +219,7 @@ describe('the store: the mode check', () => {
     // Both arms carry the same parameters, so only the discriminant can
     // say a view was meant for a window of the other kind.
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const params = { cameraOffset: { x: 0.25, y: 0, z: 0 }, split: false, rotationOffsetRad: 0 }
+    const params = { cameraOffset: { x: 0.25, y: 0, z: 0 }, orientation: IDENTITY_ORIENTATION, split: false, rotationOffsetRad: 0 }
     const warpWindow = createOutputStateStore('projector-warp')
     expect(warpWindow.state().view.mode).toBe('projector-warp')
     expect(warpWindow.accept(diff(1, { view: { mode: 'sos-equirect', dayNight: true, params } })).changed).toEqual([])
@@ -239,7 +239,7 @@ describe('the store: the mode check', () => {
     const view = {
       mode: DEFAULT_OUTPUT_MODE,
       dayNight: false,
-      params: { cameraOffset: { x: 0.5, y: 0, z: 0 }, split: true, rotationOffsetRad: 0 },
+      params: { cameraOffset: { x: 0.5, y: 0, z: 0 }, orientation: IDENTITY_ORIENTATION, split: true, rotationOffsetRad: 0 },
     }
 
     expect(store.accept(diff(1, { view })).changed).toEqual(['view'])

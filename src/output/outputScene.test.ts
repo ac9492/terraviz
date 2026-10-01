@@ -29,7 +29,14 @@ import {
   type OutputLayerInput,
 } from './outputScene'
 import { MAX_OUTPUT_LAYERS } from './layerStack'
-import { EQUIRECT_ASPECT, EQUIRECT_UNIFORMS, latLonToDirection } from './equirectRtt'
+import {
+  EQUIRECT_ASPECT,
+  EQUIRECT_UNIFORMS,
+  IDENTITY_ORIENTATION,
+  IDENTITY_PARAMS,
+  followOrientation,
+  latLonToDirection,
+} from './equirectRtt'
 import { getSunPosition } from '../utils/time'
 import { until } from '../test-utils'
 import { DECORATION_UNIFORMS } from './layerStack'
@@ -323,6 +330,19 @@ describe('the sphere texture binding', () => {
         }
         copy(v: { x: number; y: number; z: number }): this {
           this.x = v.x; this.y = v.y; this.z = v.z
+          return this
+        }
+      },
+      /**
+       * Three's own contract, kept because the orientation's layout is
+       * what a test of it has to check: `set` takes its nine arguments
+       * **row-major** and `elements` stores them **column-major**, which
+       * is what reaches a GLSL `mat3`.
+       */
+      Matrix3: class {
+        elements = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+        set(...m: number[]): this {
+          this.elements = [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]
           return this
         }
       },
@@ -750,7 +770,7 @@ describe('the sphere texture binding', () => {
 
     it('keeps the projection across a recompile', async () => {
       const { three, scene } = await build()
-      scene.setParams({ cameraOffset: { x: 0.4, y: 0, z: 0 }, split: true, rotationOffsetRad: 0 })
+      scene.setParams({ cameraOffset: { x: 0.4, y: 0, z: 0 }, orientation: IDENTITY_ORIENTATION, split: true, rotationOffsetRad: 0 })
 
       scene.setLayers([layer()])
 
@@ -763,6 +783,31 @@ describe('the sphere texture binding', () => {
       }
       expect(offset.x).toBe(0.4)
       expect(three.uniformsSeen[1][EQUIRECT_UNIFORMS.split].value).toBe(true)
+    })
+
+    it('uploads the orientation as the matrix it is, not its transpose', async () => {
+      // `EquirectParams.orientation` is row-major and a GLSL `mat3` is
+      // column-major; Three's `set` is what bridges the two. Passing the
+      // tuple anywhere that takes column-major would upload the inverse
+      // turn — the pole would come round to the front from the wrong
+      // side, and only off the equator, so nothing obvious would say so.
+      const { three, scene } = await build()
+      const m = followOrientation(-80, 30, 25)
+      scene.setParams({ ...IDENTITY_PARAMS, orientation: m })
+
+      const uploaded = three.uniformsSeen[0][EQUIRECT_UNIFORMS.orientation].value as { elements: number[] }
+      // Column-major: element `col * 3 + row` is row `row`, column `col`.
+      for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 3; col++) {
+          expect(uploaded.elements[col * 3 + row]).toBe(m[row * 3 + col])
+        }
+      }
+    })
+
+    it('starts unturned, so a window opens on the uniform unwrap', async () => {
+      const { three } = await build()
+      const uploaded = three.uniformsSeen[0][EQUIRECT_UNIFORMS.orientation].value as { elements: number[] }
+      expect(uploaded.elements).toEqual([1, 0, 0, 0, 1, 0, 0, 0, 1])
     })
 
     it('does not recompile for a metadata-only change', async () => {

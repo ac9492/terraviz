@@ -775,7 +775,7 @@ describe('the heartbeat', () => {
     await manager.addOutput({ monitorIndex: 0, view: { trackCamera: false } })
     fake.send(ready('output-1'))
     await manager.applyState({
-      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1 } },
+      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1, bearing: 0 } },
     })
     fake.emitted.length = 0
 
@@ -807,7 +807,7 @@ describe('the heartbeat', () => {
     fake.emitted.length = 0
 
     await manager.applyState({
-      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1 } },
+      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1, bearing: 0 } },
     })
 
     const byLabel = Object.fromEntries(fake.emitted.map(e => [e.label, e.payload]))
@@ -840,7 +840,7 @@ describe('the heartbeat', () => {
     await manager.addOutput({ monitorIndex: 0, view: { trackCamera: true } })
     fake.send(ready('output-1'))
     await manager.applyState({
-      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1 } },
+      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1, bearing: 0 } },
     })
     fake.emitted.length = 0
 
@@ -859,7 +859,7 @@ describe('the heartbeat', () => {
     await manager.addOutput({ monitorIndex: 0, view: { trackCamera: true } })
     fake.send(ready('output-1'))
     await manager.applyState({
-      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1 } },
+      view: { dayNight: true, camera: { lat: 0, lon: 0, zoom: 1, bearing: 0 } },
     })
     const lastApplied = fake.emitted[fake.emitted.length - 1].payload.seq
 
