@@ -605,6 +605,7 @@
   "outputs.warp.refusal.badName": "{file} does not name a projector.",
   "outputs.warp.refusal.bundleLayout": "{file} cannot be used ({reason}), so nothing this build can trust says where the bundle's meshes go.",
   "outputs.warp.refusal.bundleLayoutFormat": "{file} is in a format this build does not read ({format}), so nothing it can trust says where the bundle's meshes go.",
+  "outputs.warp.refusal.bundleLayoutUv": "{file} says its meshes address \"{uv}\", not an equirectangular frame. This build draws only meshes made for an equirectangular frame, so nothing is imported.",
   "outputs.warp.refusal.duplicateId": "More than one mesh for {ids}.",
   "outputs.warp.refusal.layoutDuplicate": "Two meshes claim one quadrant: {ids}.",
   "outputs.warp.refusal.layoutUnplaceable": "SOS's quadrants have no place for {ids}. This rig's layout has to come from the bundle, which sphere-sim does not write yet.",

@@ -411,6 +411,12 @@ describe("readWarpSources — a bundle's own layout (sphere-sim#52)", () => {
     expect(layoutOf([laidOut(JSON.stringify(withExtra))])?.projectors).toHaveLength(2)
   })
 
+  it('reads a layout that says its meshes address an equirectangular frame, as one that says nothing', () => {
+    expect(layoutOf([laidOut(layoutText({ uv: 'equirectangular' }))])).toEqual(layoutOf([laidOut(layoutText())]))
+    const model = layoutText({ surface: 'mesh', rotationOffsetDeg: null, uv: 'equirectangular' })
+    expect(layoutOf([laidOut(model)])?.texture).toEqual({ surface: 'mesh', rotationOffsetDeg: null })
+  })
+
   it('refuses a layout it cannot use, and never falls back to asking', () => {
     const problem = (text: string): unknown => {
       const refusal = refusalOf([laidOut(text)])
@@ -431,6 +437,15 @@ describe("readWarpSources — a bundle's own layout (sphere-sim#52)", () => {
     for (const framebuffer of [{ width: 0, height: 1080 }, { width: 3840.5, height: 1080 }, { width: 3840 }, null]) {
       expect(problem(layoutText({ framebuffer })), JSON.stringify(framebuffer)).toEqual({ code: 'framebuffer' })
     }
+    // A frame other than the one this build draws, said in any way at all.
+    expect(problem(layoutText({ uv: 'fisheye' }))).toEqual({ code: 'uv', uv: 'fisheye' })
+    expect(problem(layoutText({ surface: 'mesh', rotationOffsetDeg: null, uv: 'model' }))).toEqual({ code: 'uv', uv: 'model' })
+    expect(problem(layoutText({ uv: 'Equirectangular' }))).toEqual({ code: 'uv', uv: 'Equirectangular' })
+    expect(problem(layoutText({ uv: null }))).toEqual({ code: 'uv', uv: 'null' })
+    expect(problem(layoutText({ uv: { projection: 'equirectangular' } }))).toEqual({
+      code: 'uv',
+      uv: '{"projection":"equirectangular"}',
+    })
     expect(problem(layoutText({ rotationOffsetDeg: null }))).toEqual({ code: 'texture' })
     expect(problem(layoutText({ surface: 'mesh', rotationOffsetDeg: 30 }))).toEqual({ code: 'texture' })
     expect(problem(layoutText({ surface: 'dome' }))).toEqual({ code: 'texture' })
@@ -505,6 +520,14 @@ describe('a mesh made for a fisheye frame', () => {
       expect(stats.triangles).toBeGreaterThan(0)
       expect(stats.droppedWide).toBe(0)
     }
+  })
+
+  it("is refused from a bundle that says what its (u, v) address, and the frame isn't equirect", () => {
+    expect(refusalOf([domeBundle({ uv: 'fisheye' })])).toEqual({
+      code: 'bundle-layout',
+      file: 'rig.zip/layout.json',
+      problem: { code: 'uv', uv: 'fisheye' },
+    })
   })
 })
 

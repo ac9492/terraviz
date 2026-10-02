@@ -211,9 +211,13 @@ export function describeWarpRefusal(refusal: WarpAssignRefusal): string {
     case 'bundle-layout':
       // The format gets a sentence of its own: a newer sphere-sim is the
       // likeliest reason, and the remedy is a different build, not a
-      // different file.
+      // different file. So does the frame, whose file is not broken: it
+      // is made for a projection this build does not draw.
       if (refusal.problem.code === 'format') {
         return t('outputs.warp.refusal.bundleLayoutFormat', { file: refusal.file, format: refusal.problem.format })
+      }
+      if (refusal.problem.code === 'uv') {
+        return t('outputs.warp.refusal.bundleLayoutUv', { file: refusal.file, uv: refusal.problem.uv })
       }
       return t('outputs.warp.refusal.bundleLayout', { file: refusal.file, reason: layoutProblemReason(refusal.problem) })
     case 'set':

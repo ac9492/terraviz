@@ -398,6 +398,12 @@ never falls back to the question. The likeliest reason is a newer
 sphere-sim, and the message names the format it found. The remedy is
 a newer build of this app, not a different file.
 
+**So does a `layout.json` that says its meshes address anything but
+an equirectangular frame** — a fisheye, say, or a model's own texture
+layout. No sphere-sim writes that yet. Here the file is not broken:
+it was made for a picture this app does not draw, and the remedy is a
+different file.
+
 **A stretch warning before the import** means the part of this
 display a mesh would fill is not the shape it was solved for. The usual cause
 is a 4096×2160 span, whose 2048×1080 quadrants stretch a 16:9

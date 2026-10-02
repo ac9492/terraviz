@@ -36,6 +36,14 @@
  * bundle said where its meshes go, and a guess where it said so is the
  * silent misplacement the file exists to end.
  *
+ * **What `(u, v)` address is a declaration or nothing.** A Bourke file
+ * cannot say: its texture coordinates refer to "the original input image",
+ * and a dome's fisheye mesh parses, places and draws exactly as an equirect
+ * one does — a smooth picture that is wrong, with nothing dropped to show
+ * it. So a layout that states the frame is believed only when it states
+ * equirectangular, and refused for anything else. One that states nothing
+ * reads as it did.
+ *
  * The parser and the set check are imported from `projectorWarp` rather
  * than restated: a set is re-read by the same functions on restore and by
  * the output on receipt, and one parser is one set of refusals.
@@ -107,16 +115,22 @@ export interface BundleLayout {
 export type WarpPlacement = 'sos-quadrants' | BundleLayout
 
 /**
- * Why a `layout.json` could not be used. `format` carries what the file
- * said it was, since a newer sphere-sim is the likeliest reason and the
- * operator's remedy differs; the others name the entry to blame where
- * there is one.
+ * Why a `layout.json` could not be used. `format` and `uv` carry what the
+ * file said, since each has a remedy of its own — a newer build for a
+ * newer sphere-sim, a different file for a different projection; the
+ * others name the entry to blame where there is one.
  */
 export type BundleLayoutProblem =
   | { readonly code: 'not-json' }
   | { readonly code: 'format'; readonly format: string }
   | { readonly code: 'origin' }
   | { readonly code: 'framebuffer' }
+  /**
+   * The layout says the meshes address something other than an
+   * equirectangular frame — a fisheye, a model's own UV set — which this
+   * build would draw as though it were one.
+   */
+  | { readonly code: 'uv'; readonly uv: string }
   | { readonly code: 'texture' }
   | { readonly code: 'projectors' }
   /** An entry names a mesh the archive does not hold at `warp/<id>.data`. */
@@ -189,6 +203,8 @@ const LAYOUT_ENTRY = 'layout.json'
  * `@1` would misread the file, so any other value is a different contract.
  */
 const LAYOUT_FORMAT = 'sphere-sim/projector-layout@1'
+/** The one frame a layout may say its meshes address: the only one this build draws. */
+const UV_EQUIRECT = 'equirectangular'
 /** A picked file: any case, since a renamed file is still the file. */
 const PICKED_MESH = /\.data$/i
 const ARCHIVE = /\.zip$/i
@@ -237,7 +253,9 @@ type LayoutParse =
  * the layout and the meshes disagreeing about which projectors exist, and
  * a reader that picked one would be the misplacement the file ends.
  * Fields this build does not know are ignored: sphere-sim adds fields
- * within a format and bumps it only for ones a reader would misread.
+ * within a format and bumps it only for ones a reader would misread. `uv`
+ * is the one added field read ahead of its writer, because ignoring it is
+ * the misreading: where present it must say `equirectangular`.
  * Whether the viewports fit the framebuffer and share no pixels is
  * `placeWarpSet`'s, run on the paired set after this.
  */
@@ -258,6 +276,12 @@ export function parseBundleLayout(
   const fb = raw.framebuffer
   const pixels = (n: unknown): n is number => Number.isInteger(n) && (n as number) > 0
   if (!isRecord(fb) || !pixels(fb.width) || !pixels(fb.height)) return fail({ code: 'framebuffer' })
+  // A layout that says nothing about (u, v), as every one written before
+  // the field does, reads as it did: a sphere's are equirect by
+  // construction, and a model's never were checkable here.
+  if (Object.prototype.hasOwnProperty.call(raw, 'uv') && raw.uv !== UV_EQUIRECT) {
+    return fail({ code: 'uv', uv: typeof raw.uv === 'string' ? raw.uv : JSON.stringify(raw.uv) })
+  }
 
   let texture: WarpTexture
   if (raw.surface === 'sphere' && isFiniteNumber(raw.rotationOffsetDeg)) {

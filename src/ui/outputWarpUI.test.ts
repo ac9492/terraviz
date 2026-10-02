@@ -187,6 +187,10 @@ describe('describeWarpRefusal', () => {
         { code: 'bundle-layout', file: 'rig.zip/layout.json', problem: { code: 'unknown-mesh', mesh: 'warp/P9.data' } },
         ['rig.zip/layout.json', 'unknown-mesh: warp/P9.data'],
       ],
+      [
+        { code: 'bundle-layout', file: 'rig.zip/layout.json', problem: { code: 'uv', uv: 'fisheye' } },
+        ['rig.zip/layout.json', '"fisheye"', 'equirectangular', 'nothing is imported'],
+      ],
       [{ code: 'bundle-layout', file: 'rig.zip/layout.json', problem: { code: 'origin' } }, ['(origin)']],
       [{ code: 'no-output' }, ['no longer open']],
       [{ code: 'not-a-warp-output' }, ['projector-warp']],
