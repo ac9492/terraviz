@@ -33,11 +33,13 @@ Phase 2 opt-in public projection:
 | File | Responsibility |
 |---|---|
 | `functions/api/v1/_lib/stac-publication.ts` | Public STAC adapters, fresh D1-dependent content-addressed KV snapshots and internal exclusion reasons; richer profile fields remain disabled |
-| `functions/api/v1/_lib/stac-publication-store.ts` | Primary-backed transactional STAC snapshot: canonical public predicate, ordered decorations/renditions, workflow ownership, identity and public-only branding in one D1 batch |
-| `functions/api/v1/_lib/stac-assets.ts` | Bounded anonymous HEAD verification of stable HTTPS assets on explicitly trusted origins; no redirects, cookies or credential forwarding; fail-closed MIME/reachability evidence |
+| `functions/api/v1/_lib/stac-publication-store.ts` | Primary-backed transactional STAC snapshot; dataset-scoped capture mode reads one row with decorations and no history |
+| `functions/api/v1/_lib/stac-assets.ts` | Bounded anonymous HEAD verification on trusted origins; persisted capture-time frame evidence is rechecked against current origin policy and excluded from the public request probe budget |
+| `functions/api/v1/_lib/stac-history.ts` | Opt-in, failure-isolated capture; immutable scientific frame identities, conditional atomic snapshot writes, live access/rights overlays, and Collection extent aggregation |
 | `functions/api/v1/_lib/stac-http.ts` | Core-resource routing, bounded cursor pagination, media types, revalidated ETags and non-cacheable errors; no STAC API conformance claim |
 | `functions/api/v1/stac/[[path]].ts` | Opt-in public STAC route boundary; unavailable inputs fail closed |
 | `functions/api/v1/publish/stac-report.ts` | Authenticated admin/service-only, no-store STAC inclusion/exclusion report over all rows; no private URLs, titles or cached operator data |
+| `functions/api/v1/publish/stac-lineage.ts` | Admin/service-only paginated lineage inventory and immutable, reviewed source-evidence backfill per saved publication; bounded requests, idempotent writes, Processing remains disabled |
 | `functions/schema/stac/terraviz/v1.0.0/schema.json.ts` | Immutable public Terraviz extension schema, sourced directly from the reviewed local schema |
 
 | File | Responsibility |

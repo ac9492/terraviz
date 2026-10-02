@@ -1118,6 +1118,7 @@ export async function clearTranscoding(
   dataRef: string,
   now: string,
   frameSource: FrameSourceCompleteFields | null = null,
+  historyStatements: D1PreparedStatement[] = [],
 ): Promise<number> {
   // `content_digest = NULL` here is the atomic counterpart to
   // the *conditional* clear in `stampTranscodingForVideoSource`:
@@ -1141,7 +1142,7 @@ export async function clearTranscoding(
   // state to preserve), so on the draft path this UPDATE is just
   // re-asserting the same values.
   if (frameSource) {
-    const result = await db
+    const statement = db
       .prepare(
         `UPDATE datasets
            SET transcoding = NULL,
@@ -1163,10 +1164,10 @@ export async function clearTranscoding(
         datasetId,
         uploadId,
       )
-      .run()
-    return result.meta?.changes ?? 0
+    const { writeWithHistory } = await import('./stac-history')
+    return writeWithHistory(db, statement, historyStatements)
   }
-  const result = await db
+  const statement = db
     .prepare(
       `UPDATE datasets
          SET transcoding = NULL,
@@ -1177,8 +1178,8 @@ export async function clearTranscoding(
        WHERE id = ? AND active_transcode_upload_id = ?`,
     )
     .bind(dataRef, now, datasetId, uploadId)
-    .run()
-  return result.meta?.changes ?? 0
+  const { writeWithHistory } = await import('./stac-history')
+  return writeWithHistory(db, statement, historyStatements)
 }
 
 /**

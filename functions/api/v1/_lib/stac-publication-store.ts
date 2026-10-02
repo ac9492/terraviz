@@ -3,6 +3,7 @@
 
 import { PUBLIC_DATASET_PREDICATE, type DatasetRow, type DecorationRows, type NodeIdentityRow } from './catalog-store'
 import type { StacMediaIntrinsics, StacReadModel, StacRendition } from './stac-read-model'
+import type { StacHistoryPublication } from './stac-history'
 
 interface SnapshotRow extends DatasetRow, StacMediaIntrinsics {
   stac_tags: string
@@ -16,9 +17,10 @@ interface SnapshotRow extends DatasetRow, StacMediaIntrinsics {
 
 export interface StacPublicationInput extends StacReadModel {
   branding: { org_name: string; logo_ref: string | null } | null
+  history: StacHistoryPublication[]
 }
 
-export async function readStacPublicationInput(db: D1Database, includeNonPublic = false): Promise<StacPublicationInput> {
+export async function readStacPublicationInput(db: D1Database, includeNonPublic = false, captureDatasetId?: string): Promise<StacPublicationInput> {
   const session = db.withSession('first-primary')
   const results = await session.batch([
     session.prepare('SELECT node_id, display_name, base_url, description, contact_email, public_key, created_at FROM node_identity LIMIT 1'),
@@ -34,14 +36,23 @@ export async function readStacPublicationInput(db: D1Database, includeNonPublic 
         'ref', ref, 'mime_type', mime_type, 'content_digest', content_digest, 'created_at', created_at))
         FROM (SELECT * FROM dataset_renditions WHERE dataset_id = datasets.id ORDER BY rendition_id)) AS stac_renditions,
       EXISTS(SELECT 1 FROM workflows WHERE target_dataset_id = datasets.id) AS stac_workflow
-      FROM datasets WHERE ${includeNonPublic ? '1 = 1' : PUBLIC_DATASET_PREDICATE} ORDER BY id`),
+      FROM datasets WHERE ${captureDatasetId ? 'id = ?' : includeNonPublic ? '1 = 1' : PUBLIC_DATASET_PREDICATE} ORDER BY id`).bind(...(captureDatasetId ? [captureDatasetId] : [])),
     session.prepare('SELECT org_name, logo_ref FROM node_profile WHERE id = 1'),
+    session.prepare(`SELECT history.*, (SELECT json_group_array(json_object(
+      'id', id, 'ordinal', ordinal, 'data_ref', data_ref, 'content_digest', content_digest,
+      'format', format, 'start_time', start_time, 'end_time', end_time)) FROM
+      (SELECT * FROM stac_history_items WHERE publication_id = history.id ORDER BY ordinal)) AS items_json
+      FROM stac_history_publications history WHERE ${captureDatasetId ? '0' : '1'} AND dataset_id IN
+        (SELECT id FROM datasets WHERE ${includeNonPublic ? '1 = 1' : PUBLIC_DATASET_PREDICATE})
+      ORDER BY captured_at, id`),
   ])
   if (results.some(result => !result.success)) throw new Error('STAC snapshot read failed')
   const identity = results[0].results[0] as NodeIdentityRow | undefined
   return {
     node: identity ? { identity } : null,
     branding: (results[2].results[0] as StacPublicationInput['branding']) ?? null,
+    history: (results[3].results as unknown as (Omit<StacHistoryPublication, 'items'> & { items_json: string })[])
+      .map(({ items_json, ...publication }) => ({ ...publication, items: JSON.parse(items_json) })),
     datasets: (results[1].results as unknown as SnapshotRow[]).map(snapshot => {
       const { stac_tags, stac_categories, stac_keywords, stac_developers, stac_related, stac_renditions, stac_workflow, ...row } = snapshot
       const decorations: DecorationRows = { tags: JSON.parse(stac_tags), categories: JSON.parse(stac_categories),

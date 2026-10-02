@@ -1028,12 +1028,14 @@ export async function publishDataset(
   if (errors.length) return { ok: false, status: 400, errors }
 
   const now = new Date().toISOString()
-  await db
+  const { prepareHistory, historyInsertStatements, writeWithHistory } = await import('./stac-history')
+  const history = await prepareHistory(env, row, now)
+  const publish = db
     .prepare(
       `UPDATE datasets SET published_at = ?, retracted_at = NULL, updated_at = ? WHERE id = ?`,
     )
     .bind(now, now, id)
-    .run()
+  await writeWithHistory(db, publish, history ? historyInsertStatements(db, history) : [])
   await invalidateSnapshot(env)
   // Publication makes the row searchable — embed it so the docent's
   // vector index covers it on the next search.

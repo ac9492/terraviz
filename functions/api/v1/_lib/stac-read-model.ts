@@ -62,6 +62,7 @@ export interface StacNodeContext {
   customFields?: StacCustomField[]
 }
 export interface StacDatasetReadModel {
+  verifiedFrameAssets?: { sourceRef: string; href: string; type: string }[]
   row: DatasetRow
   decorations: DecorationRows
   media: StacMediaIntrinsics
@@ -70,6 +71,7 @@ export interface StacDatasetReadModel {
   vocabularyReferences?: VocabularyReference[]
   licenseReferenceEvidence?: Record<string, string>
   publicationKind?: 'indivisible' | 'sequence' | 'workflow' | 'unknown'
+  itemIdentity?: { kind: 'frame' | 'revision'; persisted_id: string }
 }
 export interface StacReadModel {
   node: StacNodeContext | null

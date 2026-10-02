@@ -168,7 +168,7 @@ export function buildStacProduct(model: StacDatasetReadModel, node: StacNodeCont
   const { row } = model
   if (row.visibility !== 'public' || row.is_hidden !== 0 || row.retracted_at !== null || !row.published_at) return { ok: false, reasons: ['not_public'] }
   if (row.transcoding === 1) return { ok: false, reasons: ['transcoding_in_progress'] }
-  const readiness = evaluateMetadataReadiness({ ...row, publication_kind: model.publicationKind, curated_license_evidence: model.licenseReferenceEvidence
+  const readiness = evaluateMetadataReadiness({ ...row, publication_kind: model.publicationKind, item_identity: model.itemIdentity, curated_license_evidence: model.licenseReferenceEvidence
     ? Object.fromEntries(Object.entries(model.licenseReferenceEvidence).map(([key, statement]) => [key, { statement }])) : undefined })
   if (readiness.decision === 'excluded' || readiness.decision === 'needs_review') return { ok: false, reasons: readiness.reasons }
   if (!row.title.trim()) return { ok: false, reasons: ['title_missing'] }
@@ -279,7 +279,7 @@ export function buildStacProduct(model: StacDatasetReadModel, node: StacNodeCont
     const temporal: StacTemporal = readiness.temporal.status === 'instant' ? { datetime: start } : { datetime: null, start_datetime: start, end_datetime: end }
     item = { type: 'Feature', stac_version: STAC_VERSION, stac_extensions: [], id: itemId, ...spatial,
       ...(collection ? { collection: collectionId } : {}),
-      properties: { ...common, ...temporal, ...(!collection ? { license } : {}) }, assets,
+      properties: { ...common, ...temporal, ...(!collection || model.itemIdentity ? { license } : {}) }, assets,
       links: [link('self', itemUrl, 'application/geo+json'), link('root', root), link('parent', collectionUrl ?? root), ...(collectionUrl ? [link('collection', collectionUrl)] : []), ...extraLinks],
     }
     for (const [key, value] of [['created', row.created_at], ['updated', row.updated_at]] as const) {
