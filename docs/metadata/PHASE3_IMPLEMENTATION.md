@@ -1,7 +1,7 @@
 # Phase 3: Atomic History
 
 **Status:** Implemented; deployment and operator backfill pending
-**Last reviewed:** 2026-10-01
+**Last reviewed:** 2026-10-02
 **Revisit when:** Asset hosting/origin policy, Workers quotas, callback timeouts, or history retention/deletion policy changes.
 
 One DCO-signed commit corresponds to each numbered step in the
@@ -24,8 +24,12 @@ frame digests. Titles, abstracts, tags, rights and
 other descriptive corrections do not mint a second set of frame Items.
 
 Capture requires `STAC_HISTORY_CAPTURE=true`, independently of `STAC_ENABLED`.
-It is off by default, so existing nodes do no capture reads or probes. Capture
-reads one dataset and its decorations, never the entire catalog or old history.
+It is off by default, so no capture preparation reads or asset probes run.
+Capture reads one dataset and its decorations, never the entire catalog or old
+Item history. A null prepare result for an already-published dataset performs
+one bounded lookup of its latest publication kind/first Item ID. If history
+exists, the skip is logged with readiness reasons (or `capture_disabled` / a
+prerequisite fallback); datasets without history do not emit this warning.
 The insert and native publication update share one D1 transaction. Conditional
 inserts compare an explicit list of physical dataset columns (including the
 metadata revision timestamp); a mismatch skips the snapshot rather than raising
@@ -42,12 +46,21 @@ native-only.
 
 Before projecting history, the reader compares the latest saved publication's
 asset and scientific identity with the current row, using the same fields as
-capture keys. Revision comparisons include `data_ref`, content/source digest,
+capture keys. Revision comparisons include `data_ref`, content digest,
 format and scientific fields; frame comparisons also include the manifest ref
 and frame count. Manifest refs must identify immutable source sets. Descriptive
-corrections do not make history stale. A changed identity without a matching
+corrections do not make history stale. `source_digest` tracks the latest upload
+attempt, not the published asset: stamping changes it and failure cleanup clears
+it even while the old bundle remains published. It is therefore excluded from
+both capture keys and freshness checks, but retained in the native write's
+concurrency guard. A same-file stamp, abandonment and republish cannot create a
+duplicate revision merely because that upload-attempt digest becomes null.
+A changed identity without a matching
 latest capture excludes that dataset's entire history and Collection, including
-direct Item URLs (404), with `history_stale` in the operator report. Other
+direct Item URLs (404), with `history_stale` plus the live row's normal readiness
+reasons in the operator report. For example, a changed upload that resets
+evidence reports `spatial_unknown` and `temporal_unknown` rather than hiding
+those actionable causes. Other
 datasets remain available. The check uses the fresh primary-backed read and is
 a cache dependency, so a previously cached snapshot cannot hide the mismatch.
 Missing manifests, failed HEADs, storage failures, concurrent edits, or disabling
@@ -55,9 +68,19 @@ capture can therefore leave an honest gap, never an old run advertised as curren
 The report records zero included Items; its total is the declared current frame
 count, or stored revision count plus the uncaptured current revision. These are
 expected candidate counts, not proof that the new assets have passed verification.
-Restore capture prerequisites and explicitly republish the current dataset to
-capture the missing state; a retry of an already-completed transcode callback
-alone is idempotent and does not backfill history. Then rerun the report and audit.
+Check the report's readiness reasons and establish evidence for the actual
+published asset before explicitly republishing to capture the missing state.
+Plain republish cannot restore unknown temporal/spatial evidence. A retry of an
+already-completed transcode callback alone is idempotent and does not backfill
+history. After a failed workflow run, rerun successfully **or restore the prior
+represented times and other scientific metadata/evidence for the retained
+bundle before republishing**. The runner applies new-run metadata before upload;
+abandonment retains the old bundle but does not roll that metadata back. Merely
+re-attesting the new run's times can freeze a mislabel as an immutable revision
+of old bytes. Capture permits scientific corrections to the same bundle; this
+PR adds no same-bundle conflict/override mechanism, so operators must verify the
+asset-to-metadata relationship rather than infer it from the latest run's fields.
+Then rerun the report and reachability audit.
 
 The public projection reads snapshots with current parent visibility in its
 primary-backed transaction. Private, restricted, hidden, draft and retracted
@@ -107,6 +130,15 @@ or when a verified transcode callback replaces an already published output.
 Only public, non-hidden publications are captured. The history insert and the
 guarded transcode update run in the same D1 transaction. Draft transcodes do not
 publish history; their later explicit publication captures it.
+
+**Known recurring-workflow limitation:** the runner applies sidecar evidence
+before uploading, and a distinct-file stamp resets that evidence afterwards.
+Completion can therefore succeed without capture, even with the flag enabled.
+Re-attest evidence for the newly published bundle and explicitly republish; do
+not assume callback success proves a saved revision exists. This pre-existing
+ordering/trust-boundary issue is tracked separately in
+[#475](https://github.com/zyra-project/terraviz/issues/475), not changed by this PR.
+Callback capture works only when the completed row still has valid evidence.
 
 Capture accepts upload-specific HLS bundle paths or content-addressed R2 assets
 with matching content digests. Mutable external URLs stay excluded. The stored

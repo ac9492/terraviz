@@ -5,7 +5,7 @@ import type { CatalogEnv } from './env'
 import type { DatasetRow, DecorationRows } from './catalog-store'
 import type { StacDatasetReadModel } from './stac-read-model'
 import { loadFrameManifest, frameTimestamp } from './frames-manifest'
-import { evaluateTemporal } from './metadata-readiness'
+import { evaluateMetadataReadiness, evaluateTemporal } from './metadata-readiness'
 import { parseIsoDuration } from './iso-duration'
 import type { StacProduct } from './stac-builders'
 import { buildContentAddressedFrameKey } from './r2-store'
@@ -39,7 +39,7 @@ const scientificFields = ['id', 'origin_node', 'resource_kind', 'celestial_body'
   'lon_origin', 'is_flipped_in_y', 'render_encoding', 'color_scale', 'probing_info', 'frame_extension'] as const
 
 function historyIdentity(row: DatasetRow, kind: StacHistoryPublication['kind']): Record<string, unknown> {
-  const fields = [...scientificFields, 'data_ref', 'content_digest', 'source_digest', 'format',
+  const fields = [...scientificFields, 'data_ref', 'content_digest', 'format',
     ...(kind === 'frame' ? ['frame_count', 'frame_source_filenames_ref'] as const : [])] as const
   return Object.fromEntries(fields.map(key => [key, row[key]]))
 }
@@ -115,7 +115,25 @@ export async function prepareWorkflowHistory(env: CatalogEnv, row: DatasetRow, c
 }
 
 export async function prepareHistory(env: CatalogEnv, row: DatasetRow, capturedAt: string): Promise<StacHistoryPublication | null> {
-  try { return await prepareFrameHistory(env, row, capturedAt) ?? await prepareWorkflowHistory(env, row, capturedAt) }
+  try {
+    const publication = await prepareFrameHistory(env, row, capturedAt) ?? await prepareWorkflowHistory(env, row, capturedAt)
+    if (!publication && row.published_at && env.CATALOG_DB) {
+      const saved = await env.CATALOG_DB.prepare(`SELECT kind,
+        (SELECT id FROM stac_history_items WHERE publication_id=history.id ORDER BY ordinal LIMIT 1) AS item_id
+        FROM stac_history_publications history WHERE dataset_id=? ORDER BY captured_at DESC, id DESC LIMIT 1`)
+        .bind(row.id).first<{ kind: StacHistoryPublication['kind']; item_id: string | null }>()
+      if (saved) {
+        const reasons = evaluateMetadataReadiness({ ...row,
+          publication_kind: saved.kind === 'revision' ? 'workflow' : 'sequence',
+          item_identity: { kind: saved.kind, persisted_id: saved.item_id ?? undefined } }).reasons
+        if (env.STAC_HISTORY_CAPTURE !== 'true') reasons.unshift('capture_disabled')
+        if (row.transcoding) reasons.push('transcoding_in_progress')
+        console.warn('[stac-history] capture skipped for published dataset:', row.id,
+          reasons.join(', ') || 'capture prerequisites unmet')
+      }
+    }
+    return publication
+  }
   catch (error) {
     console.warn('[stac-history] capture unavailable; native publication continues:', error instanceof Error ? error.message : String(error))
     return null

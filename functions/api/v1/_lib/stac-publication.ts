@@ -9,7 +9,7 @@ import { verifyStacAssets } from './stac-assets'
 import { computeEtag } from './snapshot'
 import type { StacCatalog, StacCollection } from './stac-types'
 import { historyMatchesDataset, historyModels, linkHistoryRevisions, mergeHistoryCollections } from './stac-history'
-import { evaluateTemporal } from './metadata-readiness'
+import { evaluateMetadataReadiness, evaluateTemporal } from './metadata-readiness'
 
 export interface StacPublication {
   catalog: StacCatalog
@@ -50,7 +50,7 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
   if (!model.node) throw new Error('Missing node identity')
   const branding = model.branding
   if (branding) model.node.publicOrgName = branding.org_name
-  const seed = JSON.stringify({ version: 8, operatorReport: options.operatorReport === true, model, r2: env.R2_PUBLIC_BASE ?? null, origins: env.STAC_ASSET_ORIGINS ?? null })
+  const seed = JSON.stringify({ version: 9, operatorReport: options.operatorReport === true, model, r2: env.R2_PUBLIC_BASE ?? null, origins: env.STAC_ASSET_ORIGINS ?? null })
   const key = `stac:publication:v1:${(await computeEtag(seed)).replace(/"/g, '')}`
   if (env.CATALOG_KV && !options.operatorReport) {
     try {
@@ -73,7 +73,10 @@ export async function readStacPublication(env: CatalogEnv, options: { operatorRe
       .sort((first, second) => Date.parse(first.captured_at) - Date.parse(second.captured_at) || first.id.localeCompare(second.id))
     if (!publications.length) return [dataset]
     if (!historyMatchesDataset(publications.at(-1)!, dataset)) {
-      const entry = { id: dataset.row.id, included: false, reasons: ['history_stale'], items_included: 0,
+      const latest = publications.at(-1)!
+      const readiness = evaluateMetadataReadiness({ ...dataset.row, publication_kind: dataset.publicationKind,
+        item_identity: { kind: latest.kind, persisted_id: latest.items[0]?.id } })
+      const entry = { id: dataset.row.id, included: false, reasons: ['history_stale', ...readiness.reasons], items_included: 0,
         items_total: dataset.publicationKind === 'workflow' ? publications.filter(publication => publication.kind === 'revision').length + 1
           : dataset.row.frame_count ?? 0 }
       report.push(entry)
