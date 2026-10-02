@@ -77,6 +77,24 @@ output on Windows, and closes the socket in all outcomes. The
 
 ## Step 5: Client Interoperability
 
-Client-specific results are recorded here after executable validation.
+Fixture-backed executable results:
+
+| Client | Check | Result |
+| --- | --- | --- |
+| PySTAC Client 0.9.0 | Collection discovery, GET/POST paging at 17 Items/page, exact datetime filter | Passed locally, 120 unique matching Items |
+| STAC Browser 5.1.0 | Real built browser in Chromium; root, collection and Item navigation with successful HTTP responses, no page errors | Passed locally; Item screenshot retained by CI |
+| STAC-GeoParquet 0.8.2 | Independent requests-based next-link traversal at 19 Items/page, index ingestion, Parquet round-trip | Passed locally; all 120 IDs and geometries retained |
+| QGIS 3.34.4-Prizren OAPIF provider | Real offscreen PyQGIS layer, all 120 features, geographic CRS and nonempty geometry | Passed in Linux CI; not installed on the local Windows host |
+
+Run `functions/api/v1/stac/clients.test.ts` with `STAC_CLIENTS=true`.
+`STAC_BROWSER_DIST` must point to a separately built STAC Browser 5.1.0
+distribution (`SB_historyMode=hash npm run build` in its checkout).
+Set `STAC_QGIS_PYTHON` to the Python executable that can import `qgis.core`
+to include the QGIS test. Missing tools are explicit skips in normal unit
+tests, not claimed passes. The dedicated CI job sets all three variables.
+These tools are test-only and do not enter the application's dependencies.
+
+STAC-GeoParquet is an independent bulk indexing path, not a hosted registry
+submission. No production node was submitted to a third-party service.
 Fixture-backed success is not a substitute for checking the deployed
 node's actual catalog, anonymous assets, CORS and canonical origin.
