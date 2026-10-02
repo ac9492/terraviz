@@ -208,6 +208,8 @@ Phase 2 opt-in public projection:
 
 ## Backend shared library (`_lib/`)
 
+| `functions/api/v1/_lib/stac-query.ts` | Bounded STAC API query parsing and inclusive spatial/temporal predicates for public Item lists |
+
 | File | Responsibility |
 |---|---|
 | `functions/api/_lib/workers-ai-error.ts` | Workers AI error classification helper for Phase 1f/D's quota guard rail |

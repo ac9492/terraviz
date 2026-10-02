@@ -218,7 +218,8 @@ describe('STAC public routes', () => {
       }
       const product = publication.products[0]
       const alias = `https://node.example/api/v1/stac/collections/${product.collection!.id}/items/${product.item!.id}`
-      expect(await (await onRequestGet(makeCtx({ env, url: alias }) as never)).json()).toEqual(product.item)
+      expect(await (await onRequestGet(makeCtx({ env, url: alias }) as never)).json()).toEqual({ ...product.item,
+        links: product.item!.links.map(link => link.rel === 'self' ? { ...link, href: alias } : link) })
     } finally { sqlite.close() }
   })
 
@@ -245,7 +246,7 @@ describe('STAC public routes', () => {
     } finally { sqlite.close() }
   })
 
-  it.each(['limit=0', 'limit=101', 'limit=-1', 'limit=1.5', 'limit=abc', 'cursor=unknown', 'bbox=0,0,1,1'])('rejects malformed/unsupported listing query %s', async query => {
+  it.each(['limit=0', 'limit=-1', 'limit=1.5', 'limit=abc', 'cursor=unknown', 'bbox=0,0,1'])('rejects malformed/unsupported listing query %s', async query => {
     const { sqlite, env } = stacRouteFixture()
     try {
       const response = await onRequestGet(makeCtx({ env, url: `https://node.example/api/v1/stac/items?${query}` }) as never)
