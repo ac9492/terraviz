@@ -63,10 +63,12 @@ import {
   OUTPUT_STATE_EVENT,
   DEFAULT_OUTPUT_MODE,
   defaultRenderConfig,
+  isWarpSetId,
   type OutputGlobeState,
   type OutputMode,
   type OutputRenderConfig,
   type OutputStateMessage,
+  type OutputWarpSet,
 } from '../services/multiOutput/protocol'
 import { createLinkWatchdog, type LinkHealth, type LinkWatchdog } from './linkWatchdog'
 import { logger } from '../utils/logger'
@@ -354,9 +356,14 @@ export function isStateMessage(payload: unknown): payload is OutputStateMessage 
  * Not every payload on the config channel is a config.
  *
  * Same posture as `isStateMessage`: a malformed payload costs one
- * dropped message, never an exception out of the IPC callback. Each
- * field is checked independently so a message carrying one valid half
- * is not thrown away for the other.
+ * dropped message, never an exception out of the IPC callback. Every
+ * field the type names is required, because the listener applies the
+ * whole config and this guard promises all of it. It once checked only
+ * the first two, so a payload without `warp` reached a warp window's
+ * `setWarp` as `undefined` and threw on its id, leaving the rest of the
+ * config unapplied. Shape only: a width off the ladder, a gamma out of
+ * range and a set that will not place are each the scene's to refuse,
+ * and it does.
  */
 export function isRenderConfig(payload: unknown): payload is OutputRenderConfig {
   if (typeof payload !== 'object' || payload === null) return false
@@ -364,7 +371,42 @@ export function isRenderConfig(payload: unknown): payload is OutputRenderConfig 
   return (
     typeof m.framebufferWidth === 'number' &&
     Number.isFinite(m.framebufferWidth) &&
-    typeof m.debugOverlay === 'boolean'
+    typeof m.debugOverlay === 'boolean' &&
+    typeof m.calibration === 'boolean' &&
+    typeof m.blendGamma === 'number' &&
+    Number.isFinite(m.blendGamma) &&
+    (m.warp === null || isWarpSet(m.warp))
+  )
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
+
+/**
+ * A warp set's shape, down to what the scene hands `placeWarpSet`:
+ * strings and numbers where the contract puts them, since that check
+ * refuses a set it cannot use but reads its fields as it goes. The id
+ * must be a content id, because the scene keys its rebuild on it.
+ */
+function isWarpSet(value: unknown): value is OutputWarpSet {
+  if (!isRecord(value) || !isWarpSetId(value.id) || !Array.isArray(value.meshes)) return false
+  const { texture } = value
+  const textureOk =
+    texture === null ||
+    (isRecord(texture) &&
+      ((texture.surface === 'sphere' &&
+        typeof texture.rotationOffsetDeg === 'number' &&
+        Number.isFinite(texture.rotationOffsetDeg)) ||
+        (texture.surface === 'mesh' && texture.rotationOffsetDeg === null)))
+  return (
+    textureOk &&
+    value.meshes.every(
+      (mesh) =>
+        isRecord(mesh) &&
+        typeof mesh.id === 'string' &&
+        typeof mesh.text === 'string' &&
+        isRecord(mesh.viewport) &&
+        ['x', 'y', 'w', 'h'].every((k) => typeof (mesh.viewport as Record<string, unknown>)[k] === 'number'),
+    )
   )
 }
 
