@@ -6,6 +6,7 @@ import { readStacPublication } from './stac-publication'
 import { computeEtag } from './snapshot'
 import type { StacLink } from './stac-types'
 import { matchesStacQuery, parseStacQuery } from './stac-query'
+import { STAC_API_CONFORMANCE, STAC_OPENAPI_MEDIA, stacOpenApi, stacServiceHtml, stacServiceLinks } from './stac-service'
 
 export function stacError(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), { status,
@@ -28,9 +29,13 @@ export async function serveStac(request: Request, env: CatalogEnv): Promise<Resp
   const canonical = root + (path.length ? '/' + path.join('/') : '')
   let document: unknown
   let geojson = false
+  let media = 'application/json'
   const collections = [...new Map(publication.products.flatMap(product => product.collection ? [[product.collection.id, product.collection] as const] : [])).values()]
   const items = publication.products.flatMap(product => product.item ? [product.item] : [])
-  if (!path.length) document = publication.catalog
+  if (!path.length) document = { ...publication.catalog, conformsTo: STAC_API_CONFORMANCE, links: [...publication.catalog.links, ...stacServiceLinks(root)] }
+  else if (path.join('/') === 'conformance') document = { conformsTo: STAC_API_CONFORMANCE }
+  else if (path.join('/') === 'api') { document = stacOpenApi(root); media = STAC_OPENAPI_MEDIA }
+  else if (path.join('/') === 'api.html') { document = stacServiceHtml(); media = 'text/html' }
   else if (listing) {
     const collection = path.length === 3 ? collections.find(entry => entry.id === path[1]) : null
     if (path.length === 3 && !collection) return stacError(404, 'not_found')
@@ -62,13 +67,14 @@ export async function serveStac(request: Request, env: CatalogEnv): Promise<Resp
     const item = document as typeof items[number]
     document = { ...item, links: item.links.map(link => link.rel === 'self' ? { ...link, href: canonical } : link) }
   }
-  const body = JSON.stringify(document)
+  if (geojson) media = 'application/geo+json'
+  const body = media === 'text/html' ? document as string : JSON.stringify(document)
   const etag = await computeEtag(body)
-  const headers = { 'Content-Type': `${geojson ? 'application/geo+json' : 'application/json'}; charset=utf-8`,
+  const headers = { 'Content-Type': `${media}; charset=utf-8`, Vary: 'Accept',
     ETag: etag, 'Cache-Control': 'public, no-cache, must-revalidate',
     Link: `<${root}>; rel="root"; type="application/json"` }
   const matches = request.headers.get('if-none-match')?.split(',').some(value => value.trim() === '*' || value.trim().replace(/^W\//, '') === etag)
   const accept = request.headers.get('accept')
-  if (accept && !accept.split(',').some(value => ['*/*', 'application/*', geojson ? 'application/geo+json' : 'application/json'].includes(value.split(';')[0].trim()))) return stacError(406, 'not_acceptable')
+  if (accept && !accept.split(',').some(value => ['*/*', media.split('/')[0] + '/*', media.split(';')[0]].includes(value.split(';')[0].trim()) && !/;\s*q=0(?:\.0*)?(?:;|$)/.test(value))) return stacError(406, 'not_acceptable')
   return new Response(matches || request.method === 'HEAD' ? null : body, { status: matches ? 304 : 200, headers })
 }

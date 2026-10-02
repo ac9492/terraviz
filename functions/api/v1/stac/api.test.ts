@@ -12,6 +12,27 @@ describe('STAC API Features', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'Content-Type': 'image/png' } }))))
   afterEach(() => vi.unstubAllGlobals())
 
+  it('discovers conformance and service resources with matching media types', async () => {
+    const { sqlite, env } = stacRouteFixture()
+    try {
+      const root = await (await onRequestGet(makeCtx({ env, url: 'https://node.example/api/v1/stac' }) as never)).json() as { conformsTo: string[]; links: StacLink[] }
+      expect(root.conformsTo).toEqual([])
+      for (const rel of ['conformance', 'service-desc', 'service-doc']) {
+        const link = root.links.find(value => value.rel === rel)!
+        const response = await onRequestGet(makeCtx({ env, url: link.href, headers: { Accept: link.type! } }) as never)
+        expect(response.status).toBe(200)
+        expect(response.headers.get('content-type')).toContain(link.type)
+        if (rel === 'conformance') expect(await response.json()).toEqual({ conformsTo: root.conformsTo })
+        if (rel === 'service-desc') {
+          const api = await response.json() as { openapi: string; servers: { url: string }[]; paths: Record<string, unknown> }
+          expect(api.openapi).toBe('3.0.3')
+          expect(api.servers[0].url).toBe('https://node.example/api/v1/stac')
+          expect(api.paths['/collections/{collectionId}/items']).toBeTruthy()
+        }
+      }
+    } finally { sqlite.close() }
+  })
+
   it('filters before pagination and retains filters in canonical links', async () => {
     const { sqlite, env } = stacRouteFixture(3)
     try {

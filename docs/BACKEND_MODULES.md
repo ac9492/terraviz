@@ -209,6 +209,7 @@ Phase 2 opt-in public projection:
 ## Backend shared library (`_lib/`)
 
 | `functions/api/v1/_lib/stac-query.ts` | Bounded STAC API query parsing and inclusive spatial/temporal predicates for public Item lists |
+| `functions/api/v1/_lib/stac-service.ts` | STAC API landing-page links, validated conformance allowlist, OpenAPI 3.0 and human service documentation |
 
 | File | Responsibility |
 |---|---|
