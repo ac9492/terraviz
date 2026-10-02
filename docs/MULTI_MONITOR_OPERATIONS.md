@@ -382,14 +382,23 @@ installation's session starts.
    decided, from the rig sphere-sim calibrated.
 6. **Anything that does not say where its meshes go** — loose `.data`
    files, or a bundle exported before sphere-sim added the layout —
-   gets a question instead: **Use SOS quadrants**, or **Cancel**. A
-   diagram shows each mesh in the quadrant it would take.
-   - An SOS rig: use the quadrants.
+   gets a question instead: **Import as equirectangular in SOS
+   quadrants**, or **Cancel**. A diagram shows each mesh in the
+   quadrant it would take. The answer states two things the files
+   cannot: where each mesh goes, and that it addresses an
+   equirectangular frame.
+   - An SOS rig from sphere-sim: import.
    - **Any other rig: cancel**, and import the ZIP from a current
      sphere-sim instead. A rig sphere-sim placed itself, such as two
      projectors or a row of four, reuses SOS's projector names in other
      places. The quadrants would send every mesh to the wrong projector,
      and the picture would still look right.
+   - **A mesh from a dome or mirror tool** (meshmapper and its kind):
+     cancel. Those address a fisheye frame, which this app does not
+     draw, and nothing in the file says so. Imported anyway, a mesh
+     like that draws a smooth, convincing globe that is wrong: the
+     whole world squeezed into the projector's disc. Renaming one to
+     `P1.data` to get past a refusal is how it would get this far.
 7. Once imported, the row reads *Drawing 4 meshes: P1, P2, P3, P4*.
    The HUD's `warp` line gives the set's id and the same count (§4).
 

@@ -225,12 +225,19 @@ describe('buildWarpSection', () => {
     expect(loaded.querySelector('.output-warp-status')!.textContent).toBe('Drawing 2 meshes: P1, P2.')
   })
 
-  it('asks before placing a bundle in SOS\'s quadrants, and imports only on the answer', async () => {
+  it('asks for the place and the frame before using SOS\'s quadrants, and imports only on the answer', async () => {
     const { section, raw } = mountSection()
     pick(section, ['sphere-sim-files.zip'])
     await until(() => section.querySelector('.output-warp-choose') !== null, 'the layout question')
 
     expect(section.textContent).toContain('Read 2 meshes: P1, P3.')
+    // The answer is the declaration the files cannot make: where the meshes
+    // go, and that their (u, v) address an equirectangular frame — with the
+    // fisheye case named, since a dome's mesh would import here otherwise.
+    const choose = section.querySelector<HTMLButtonElement>('.output-warp-choose')!
+    expect(choose.textContent).toContain('equirectangular')
+    expect(choose.textContent).toContain('SOS quadrants')
+    expect(section.textContent).toContain('fisheye frame')
     // In reading order, top row first, as the display would be read.
     const cells = [...section.querySelectorAll('.output-warp-cell')]
     expect(cells.map((c) => c.textContent)).toEqual(['P3', 'P4', 'P1', 'P2'])
@@ -256,7 +263,7 @@ describe('buildWarpSection', () => {
     await until(() => section.querySelector('.output-warp-choose') !== null, 'the layout question')
 
     expect(region.contains(section.querySelector('.output-warp-choose'))).toBe(true)
-    expect(region.textContent).toContain('Place them in Science On a Sphere')
+    expect(region.textContent).toContain("Science On a Sphere's four quadrants")
   })
 
   it('announces an import and a clear, which repaint the region away', async () => {

@@ -485,7 +485,13 @@ export function buildWarpSection(
     return row
   }
 
-  /** No layout to read: what arrived, where SOS's quadrants would put it, and the question. */
+  /**
+   * No layout to read: what arrived, where SOS's quadrants would put it,
+   * and the question. It asks for the frame as well as the place, since
+   * files with no layout cannot say what their `(u, v)` address and a
+   * dome's fisheye mesh would otherwise import on the placement alone;
+   * the confirm button names both, so the click is the declaration.
+   */
   const askQuadrants = (sources: readonly WarpSource[]): HTMLElement[] => {
     const ids = sources.map(s => s.id)
     return [

@@ -42,7 +42,9 @@
  * one does — a smooth picture that is wrong, with nothing dropped to show
  * it. So a layout that states the frame is believed only when it states
  * equirectangular, and refused for anything else. One that states nothing
- * reads as it did.
+ * reads as it did. Loose files can state nothing, so for them the
+ * operator's answer to the panel's question is the declaration, and the
+ * question asks for the frame as well as the place.
  *
  * The parser and the set check are imported from `projectorWarp` rather
  * than restated: a set is re-read by the same functions on restore and by
