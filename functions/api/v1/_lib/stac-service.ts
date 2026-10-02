@@ -11,6 +11,8 @@ export function stacServiceLinks(root: string): StacLink[] {
     { rel: 'conformance', href: `${root}/conformance`, type: 'application/json' },
     { rel: 'service-desc', href: `${root}/api`, type: STAC_OPENAPI_MEDIA },
     { rel: 'service-doc', href: `${root}/api.html`, type: 'text/html' },
+    { rel: 'search', href: `${root}/search`, type: 'application/geo+json', method: 'GET' },
+    { rel: 'search', href: `${root}/search`, type: 'application/geo+json', method: 'POST' },
   ]
 }
 
@@ -41,6 +43,17 @@ export function stacOpenApi(root: string) {
       '/collections/{collectionId}/items/{itemId}': { get: operation('getCollectionItem', 'Item', 'application/geo+json', [...collectionParameters, pathParameter('itemId')]) },
       '/items': { get: operation('getItems', 'ItemCollection', 'application/geo+json', [limit, cursor, bbox, datetime]) },
       '/items/{itemId}': { get: operation('getItem', 'Item', 'application/geo+json', [pathParameter('itemId')]) },
+      '/search': {
+        get: operation('searchItemsGet', 'ItemCollection', 'application/geo+json', [limit, cursor, bbox, datetime,
+          { ...parameter('ids', { type: 'array', items: { type: 'string' } }, 'Item identifiers.'), style: 'form', explode: false },
+          { ...parameter('collections', { type: 'array', items: { type: 'string' } }, 'Collection identifiers.'), style: 'form', explode: false },
+          parameter('intersects', { type: 'string' }, 'GeoJSON Geometry encoded as JSON. Mutually exclusive with bbox.')]),
+        post: { ...operation('searchItemsPost', 'ItemCollection', 'application/geo+json'), requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, properties: {
+          limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 }, cursor: { type: 'string' },
+          bbox: { type: 'array', minItems: 4, maxItems: 6, items: { type: 'number' } }, datetime: { type: 'string' },
+          ids: { type: 'array', maxItems: 100, items: { type: 'string' } }, collections: { type: 'array', maxItems: 100, items: { type: 'string' } }, intersects: { type: 'object', additionalProperties: true },
+        } } } } } },
+      },
     }, components: { schemas: {
       Link: { type: 'object', required: ['rel', 'href'], properties: { rel: { type: 'string' }, href: { type: 'string', format: 'uri' }, type: { type: 'string' } }, additionalProperties: true },
       Catalog: { type: 'object', required: ['id', 'type', 'stac_version', 'description', 'links', 'conformsTo'], properties: {

@@ -210,6 +210,7 @@ Phase 2 opt-in public projection:
 
 | `functions/api/v1/_lib/stac-query.ts` | Bounded STAC API query parsing and inclusive spatial/temporal predicates for public Item lists |
 | `functions/api/v1/_lib/stac-service.ts` | STAC API landing-page links, validated conformance allowlist, OpenAPI 3.0 and human service documentation |
+| `functions/api/v1/_lib/stac-search.ts` | Read-only D1 Item Search over current and saved records, intersected with fresh verified public Items; bounded JSON POST decoding |
 
 | File | Responsibility |
 |---|---|

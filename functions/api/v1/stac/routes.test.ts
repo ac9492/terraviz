@@ -165,7 +165,7 @@ describe('STAC public routes', () => {
     } finally { sqlite.close() }
   })
 
-  it.each(['search', 'collections/missing', 'items/missing', 'collections/missing/items'])('returns no-store 404 for unsupported or missing %s', async path => {
+  it.each(['collections/missing', 'items/missing', 'collections/missing/items'])('returns no-store 404 for unsupported or missing %s', async path => {
     const { sqlite, env } = stacRouteFixture()
     try {
       const response = await onRequestGet(makeCtx({ env, url: `https://node.example/api/v1/stac/${path}` }) as never)

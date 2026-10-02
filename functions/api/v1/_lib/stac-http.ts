@@ -7,6 +7,7 @@ import { computeEtag } from './snapshot'
 import type { StacLink } from './stac-types'
 import { matchesStacQuery, parseStacQuery } from './stac-query'
 import { STAC_API_CONFORMANCE, STAC_OPENAPI_MEDIA, stacOpenApi, stacServiceHtml, stacServiceLinks } from './stac-service'
+import { searchStacItems, stacPostParameters } from './stac-search'
 
 export function stacError(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), { status,
@@ -15,14 +16,20 @@ export function stacError(status: number, error: string): Response {
 
 export async function serveStac(request: Request, env: CatalogEnv): Promise<Response> {
   if (env.STAC_ENABLED !== 'true') return stacError(404, 'not_found')
-  if (!['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD' } })
   if (!env.CATALOG_DB) return stacError(503, 'binding_missing')
   const url = new URL(request.url)
   const path = url.pathname.replace(/\/$/, '').replace(/^\/api\/v1\/stac\/?/, '').split('/').filter(Boolean)
-  const listing = path.join('/') === 'collections' || path.join('/') === 'items' || (path.length === 3 && path[0] === 'collections' && path[2] === 'items')
+  const search = path.join('/') === 'search'
+  if (!['GET', 'HEAD'].includes(request.method) && !(search && request.method === 'POST')) return new Response(null, { status: 405, headers: { Allow: search ? 'GET, HEAD, POST' : 'GET, HEAD' } })
+  if (request.method === 'POST') {
+    if (url.search) return stacError(400, 'invalid_query')
+    try { url.search = (await stacPostParameters(request)).toString() }
+    catch (error) { const reason = (error as Error).message; return stacError(reason === 'unsupported_media_type' ? 415 : reason === 'query_too_large' ? 413 : 400, reason) }
+  }
+  const listing = search || path.join('/') === 'collections' || path.join('/') === 'items' || (path.length === 3 && path[0] === 'collections' && path[2] === 'items')
   if ([...url.searchParams.keys()].some(key => !listing || (path.length === 1 && path[0] === 'collections' && !['limit', 'cursor'].includes(key)))) return stacError(400, 'invalid_query')
   let query
-  try { query = parseStacQuery(url.searchParams) } catch (error) { return stacError(400, (error as Error).message) }
+  try { query = parseStacQuery(url.searchParams, search) } catch (error) { return stacError(400, (error as Error).message) }
   const limit = query.limit
   const publication = await readStacPublication(env)
   const root = publication.catalog.links.find(link => link.rel === 'self')!.href
@@ -39,7 +46,7 @@ export async function serveStac(request: Request, env: CatalogEnv): Promise<Resp
   else if (listing) {
     const collection = path.length === 3 ? collections.find(entry => entry.id === path[1]) : null
     if (path.length === 3 && !collection) return stacError(404, 'not_found')
-    const entries = path[0] === 'collections' && path.length === 1 ? collections : items.filter(item => (!collection || item.collection === collection.id) && matchesStacQuery(item, query))
+    const entries = search ? await searchStacItems(env.CATALOG_DB, items, query) : path[0] === 'collections' && path.length === 1 ? collections : items.filter(item => (!collection || item.collection === collection.id) && matchesStacQuery(item, query))
     const cursor = url.searchParams.get('cursor')
     const offset = cursor ? entries.findIndex(entry => entry.id === cursor) + 1 : 0
     if (cursor && offset === 0) return stacError(400, 'invalid_cursor')
