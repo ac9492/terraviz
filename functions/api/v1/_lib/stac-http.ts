@@ -52,7 +52,6 @@ export async function serveStac(request: Request, env: CatalogEnv): Promise<Resp
     if (cursor && offset === 0) return stacError(400, 'invalid_cursor')
     const page = entries.slice(offset, offset + limit)
     const self = new URL(canonical + url.search)
-    self.searchParams.set('limit', String(limit))
     if (cursor) self.searchParams.set('cursor', cursor)
     geojson = !(path[0] === 'collections' && path.length === 1)
     const type = geojson ? 'application/geo+json' : 'application/json'
@@ -62,6 +61,16 @@ export async function serveStac(request: Request, env: CatalogEnv): Promise<Resp
       const next = new URL(self)
       next.searchParams.set('cursor', page[page.length - 1].id)
       links.push({ rel: 'next', href: next.href, type })
+    }
+    if (request.method === 'POST') {
+      for (const link of links.filter(value => ['self', 'next'].includes(value.rel))) {
+        const parameters = new URL(link.href).searchParams
+        link.body = Object.fromEntries([...parameters].map(([key, value]) => [key,
+          key === 'limit' ? Number(value) : key === 'bbox' ? value.split(',').map(Number)
+            : ['ids', 'collections'].includes(key) ? value.split(',') : key === 'intersects' ? JSON.parse(value) : value]))
+        link.href = canonical
+        link.method = 'POST'
+      }
     }
     document = geojson ? { type: 'FeatureCollection', features: page, links, numberReturned: page.length, numberMatched: entries.length } : { collections: page, links }
   } else if (path.length === 2 && path[0] === 'collections') document = collections.find(entry => entry.id === path[1])

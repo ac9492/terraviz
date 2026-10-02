@@ -16,7 +16,7 @@ describe('STAC API Features', () => {
     const { sqlite, env } = stacRouteFixture()
     try {
       const root = await (await onRequestGet(makeCtx({ env, url: 'https://node.example/api/v1/stac' }) as never)).json() as { conformsTo: string[]; links: StacLink[] }
-      expect(root.conformsTo).toEqual([])
+      expect(root.conformsTo).toContain('https://api.stacspec.org/v1.0.0/core')
       for (const rel of ['conformance', 'service-desc', 'service-doc']) {
         const link = root.links.find(value => value.rel === rel)!
         const response = await onRequestGet(makeCtx({ env, url: link.href, headers: { Accept: link.type! } }) as never)
@@ -62,7 +62,7 @@ describe('STAC API Features', () => {
       expect(response.status).toBe(200)
       const page = await response.json() as { links: StacLink[] }
       expect(page.links).toContainEqual({ rel: 'collection', href: `https://node.example/api/v1/stac/collections/${collection.id}`, type: 'application/json' })
-      expect(new URL(page.links.find(link => link.rel === 'self')!.href).searchParams.get('limit')).toBe('100')
+      expect(new URL(page.links.find(link => link.rel === 'self')!.href).searchParams.get('limit')).toBe('1000')
     } finally { sqlite.close() }
   })
 

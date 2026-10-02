@@ -24,10 +24,12 @@ describe('indexed STAC Item Search', () => {
       const first = await post.json() as Page
       expect(first.numberMatched).toBe(2)
       expect(first.features.map(item => item.id)).toEqual([ids[0]])
-      const second = await (await serveStac(new Request(first.links.find(link => link.rel === 'next')!.href), env)).json() as Page
+      const next = first.links.find(link => link.rel === 'next')!
+      expect(next.method).toBe('POST')
+      const second = await (await serveStac(new Request(next.href, { method: next.method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next.body) }), env)).json() as Page
       expect(second.features.map(item => item.id)).toEqual([ids[1]])
       const get = await (await serveStac(new Request(`${root}/search?ids=${ids.slice(0, 2)}&collections=${query.collections}&limit=1`), env)).json()
-      expect(get).toEqual(first)
+      expect(get).toMatchObject({ features: first.features, numberMatched: first.numberMatched })
     } finally { sqlite.close() }
   })
 

@@ -3,7 +3,14 @@
 
 import type { StacLink } from './stac-types'
 
-export const STAC_API_CONFORMANCE: readonly string[] = []
+export const STAC_API_CONFORMANCE: readonly string[] = [
+  'https://api.stacspec.org/v1.0.0/core',
+  'https://api.stacspec.org/v1.0.0/collections',
+  'https://api.stacspec.org/v1.0.0/ogcapi-features',
+  'https://api.stacspec.org/v1.0.0/item-search',
+  'http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/core',
+  'http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/geojson',
+]
 export const STAC_OPENAPI_MEDIA = 'application/vnd.oai.openapi+json;version=3.0'
 
 export function stacServiceLinks(root: string): StacLink[] {

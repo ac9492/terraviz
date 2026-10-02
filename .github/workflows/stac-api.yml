@@ -1,0 +1,31 @@
+name: STAC API Conformance
+
+on:
+  pull_request:
+    paths:
+      - 'functions/api/v1/_lib/stac*'
+      - 'functions/api/v1/stac/**'
+      - 'migrations/catalog/**'
+      - '.github/workflows/stac-api.yml'
+      - 'package*.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: astral-sh/setup-uv@v6
+      - run: npm ci
+      - name: Official STAC API 1.0.0 validator
+        env:
+          STAC_EXTERNAL: 'true'
+        run: npm run test -- functions/api/v1/stac/external.test.ts
