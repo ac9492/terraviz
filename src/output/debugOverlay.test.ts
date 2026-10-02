@@ -18,6 +18,7 @@ import {
   createDrawTimer,
   createFpsMeter,
   formatOverlay,
+  formatWarpLine,
   type DebugOverlayReading,
 } from './debugOverlay'
 
@@ -468,3 +469,28 @@ describe('createDebugOverlay', () => {
     expect(OVERLAY_REFRESH_MS).toBeLessThanOrEqual(1000)
   })
 })
+
+describe('the warp line (rung 16)', () => {
+  it('says why a warp window is black, and what it is drawing when it is not', () => {
+    expect(formatWarpLine({ state: 'none' })).toBe('warp  none — import a set in the Outputs panel')
+    expect(formatWarpLine({ state: 'refused', refusal: { code: 'overlap', ids: ['P1', 'P2'] } })).toBe(
+      'warp  refused — overlap',
+    )
+    expect(formatWarpLine({ state: 'drawn', id: '0123456789abcdef', meshes: 4, triangles: 2480, droppedWide: 0 })).toBe(
+      'warp  01234567 · 4 meshes',
+    )
+    // Never nonzero on a sphere, so shown only when it is.
+    expect(formatWarpLine({ state: 'drawn', id: '0123456789abcdef', meshes: 1, triangles: 90, droppedWide: 3 })).toBe(
+      'warp  01234567 · 1 mesh · 3 dropped',
+    )
+  })
+
+  it('sits under the data line in a warp window, and is absent from any other', () => {
+    const lines = formatOverlay(reading({ warp: { state: 'none' } }))
+    expect(lines[0]).toMatch(/^data/)
+    expect(lines[1]).toMatch(/^warp  none/)
+    expect(formatOverlay(reading({ warp: null })).some((l) => l.startsWith('warp'))).toBe(false)
+    expect(formatOverlay(reading()).some((l) => l.startsWith('warp'))).toBe(false)
+  })
+})
+

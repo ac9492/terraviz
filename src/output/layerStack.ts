@@ -54,6 +54,7 @@ import type { DatasetOverlayOptions } from '../types'
 import { SHADER_DEFAULTS } from '../services/shaderSettingsService'
 import { NADIR_LUT_SIZE } from './atmosphereNadir'
 import { EQUIRECT_FRAGMENT_SHADER } from './equirectRtt'
+import { WARP_FRAGMENT_GLSL, WARP_UNIFORMS } from './projectorWarp'
 
 /**
  * How many overlay layers one output composites.
@@ -534,6 +535,12 @@ export function overlaySampleUv(
  * `texture2DGradEXT`, which Three maps to `textureGrad` for the GLSL ES
  * 3.00 it compiles. The coordinate itself is untouched, so every mirror
  * of *where* a texel lands still holds.
+ *
+ * u's gradient is then scaled by the row's length at that latitude
+ * (`rowScaledGradientU`), the same pathology at a pole instead of a
+ * seam: round a pole inside the frame, longitude sweeps a whole turn in
+ * a few pixels, and read raw that chose the pyramid's coarsest levels
+ * and blurred whole bands of latitude into a dot on the pole.
  */
 export const EQUIRECT_GRADIENT_GLSL = `
 void equirectGradients(vec2 uv, out vec2 gradX, out vec2 gradY) {
@@ -546,6 +553,9 @@ void equirectGradients(vec2 uv, out vec2 gradX, out vec2 gradY) {
     gradX.x = altX;
     gradY.x = altY;
   }
+  float rowLength = sin(uv.y * 3.14159265358979);
+  gradX.x *= rowLength;
+  gradY.x *= rowLength;
 }
 `.trim()
 
@@ -567,6 +577,33 @@ export function seamFreeGradientU(
   return Math.abs(alt.x) + Math.abs(alt.y) < Math.abs(direct.x) + Math.abs(direct.y)
     ? alt
     : direct
+}
+
+/**
+ * u's gradient as a distance on the sphere rather than a share of a
+ * row: scaled by the row's length at that latitude, `cos(latitude)`,
+ * which is `sin(π·v)` — the second half of `EQUIRECT_GRADIENT_GLSL`,
+ * applied after `seamFreeGradientU` has chosen.
+ *
+ * Every row of an equirectangular texture spans the whole turn, so near
+ * a pole a step in u is a short step on the sphere, and a fetch that
+ * read u's gradient raw took a pole inside the frame for a pixel
+ * covering hundreds of texels. Round the pole longitude sweeps a whole
+ * turn in a few pixels, so the fetch chose the pyramid's coarsest
+ * levels — and a level is a box in both directions, so it averaged
+ * whole bands of *latitude* into a dot at the pole. Measured on WebGL,
+ * the worst pixel at Antarctica's pole read the colour of 35°S.
+ *
+ * Nothing finer is lost by the scaling: a row near a pole is that row's
+ * few degrees of circle stretched across the whole texture width, so a
+ * level chosen for the distance the pixel covers holds everything the
+ * image has there. Where a pixel covers the same distance both ways —
+ * anywhere on an unturned frame, where this changes no level at all —
+ * the two gradients now agree, which is what an isotropic level needs.
+ */
+export function rowScaledGradientU(grad: { x: number; y: number }, v: number): { x: number; y: number } {
+  const rowLength = Math.sin(v * Math.PI)
+  return { x: grad.x * rowLength, y: grad.y * rowLength }
 }
 
 /**
@@ -715,8 +752,17 @@ vec4 sampleOverlayLayer(
  * loop over `uLayer[i]Map` does not compile. Unrolling at build time
  * is the standard way out and keeps the sampler count to what this
  * output actually needs.
+ *
+ * `warp` builds the `projector-warp` variant (rung 16), which differs
+ * in two lines and nothing between them. Its first line recovers the
+ * frame coordinate from the direction the mesh interpolated —
+ * `warpFrameUv`, so `vUv` becomes a local rather than a varying — and
+ * everything after is the pass as it stands: the split fold, the
+ * rotation, the ray-march, the seam-free gradients (still taken from
+ * the recovered `sphereUv`, in straight-line code before any branch) and
+ * every layer. Its last line applies the blend weight in linear light.
  */
-export function buildOutputFragmentShader(layerCount: number): string {
+export function buildOutputFragmentShader(layerCount: number, options: { warp?: boolean } = {}): string {
   const count = Math.max(0, Math.min(layerCount, MAX_OUTPUT_LAYERS))
 
   // **The Earth treatment is for the idle globe only**, and that is a
@@ -854,7 +900,7 @@ export function buildOutputFragmentShader(layerCount: number): string {
     '}',
   ].join('\n')
 
-  const body = EQUIRECT_FRAGMENT_SHADER.replace(BASE_TAIL, tail)
+  let body = EQUIRECT_FRAGMENT_SHADER.replace(BASE_TAIL, tail)
 
   // GLSL ES 1.00 has no forward declarations: `sampleOverlayLayer` must
   // appear textually before `main()` or the shader fails to compile.
@@ -862,7 +908,23 @@ export function buildOutputFragmentShader(layerCount: number): string {
   // fails only on a GPU, which is nowhere this repo's tests run — so
   // the ordering is asserted in `layerStack.test.ts`.
   const decoration = `${EARTH_DECORATION_GLSL}\n\n${EARTH_ATMOSPHERE_GLSL}`
-  const helpers = `${EQUIRECT_GRADIENT_GLSL}\n\n${idleEarth ? decoration : OVERLAY_SAMPLE_GLSL}`
+  let helpers = `${EQUIRECT_GRADIENT_GLSL}\n\n${idleEarth ? decoration : OVERLAY_SAMPLE_GLSL}`
+  let opening = 'void main() {'
+  if (options.warp) {
+    // Each edit is checked, as the tail above is: a pass whose text
+    // moved under one of these would otherwise compose into a shader
+    // that compiles and draws the unwarped frame.
+    const swap = (from: string, to: string): void => {
+      if (!body.includes(from)) {
+        throw new Error(`equirect fragment shader changed; the warp variant can no longer replace ${JSON.stringify(from)}`)
+      }
+      body = body.replace(from, to)
+    }
+    swap('varying vec2 vUv;', `varying vec3 vWarpDirection;\nvarying float vWarpWeight;\nuniform float ${WARP_UNIFORMS.blendGamma};`)
+    swap('  gl_FragColor = vec4(colour, 1.0);', `  gl_FragColor = vec4(colour * warpBlend(vWarpWeight, ${WARP_UNIFORMS.blendGamma}), 1.0);`)
+    helpers = `${helpers}\n\n${WARP_FRAGMENT_GLSL}`
+    opening = 'void main() {\n  vec2 vUv = warpFrameUv(vWarpDirection);'
+  }
   const preamble = `${declarations.join('\n')}\n\n${helpers}\n`
-  return body.replace('void main() {', `${preamble}\nvoid main() {`)
+  return body.replace('void main() {', `${preamble}\n${opening}`)
 }

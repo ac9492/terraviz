@@ -29,13 +29,21 @@ import {
   type OutputLayerInput,
 } from './outputScene'
 import { MAX_OUTPUT_LAYERS } from './layerStack'
-import { EQUIRECT_ASPECT, EQUIRECT_UNIFORMS, latLonToDirection } from './equirectRtt'
+import {
+  EQUIRECT_ASPECT,
+  EQUIRECT_UNIFORMS,
+  IDENTITY_ORIENTATION,
+  IDENTITY_PARAMS,
+  followOrientation,
+  latLonToDirection,
+} from './equirectRtt'
 import { getSunPosition } from '../utils/time'
 import { until } from '../test-utils'
 import { DECORATION_UNIFORMS } from './layerStack'
 import { NADIR_LUT_SIZE } from './atmosphereNadir'
 
-import { DEFAULT_FRAMEBUFFER_WIDTH } from '../services/multiOutput/protocol'
+import { DEFAULT_BLEND_GAMMA, DEFAULT_FRAMEBUFFER_WIDTH, type OutputMode, type OutputWarpSet } from '../services/multiOutput/protocol'
+import { WARP_ATTRIBUTES, WARP_UNIFORMS, WARP_VERTEX_SHADER } from './projectorWarp'
 
 /** A 60 Hz display's callback interval, the ordinary case. */
 const AT_60_HZ = 1000 / 60
@@ -280,6 +288,10 @@ describe('the sphere texture binding', () => {
      *  asked the renderer for — including the third argument, which is
      *  what keeps the CSS size alone. */
     const sized: Array<[number, number, boolean | undefined]> = []
+    /** What was put in the scene — the quad, so a test can ask whether it draws. */
+    const added: unknown[] = []
+    /** Every vertex stage a material was built with, beside `shadersSeen`. */
+    const vertexShadersSeen: string[] = []
     const THREE_ = {
       WebGLRenderer: class {
         /** Captured so `forceContextLoss` can fire on it, below. */
@@ -309,7 +321,7 @@ describe('the sphere texture binding', () => {
           this.canvas.dispatchEvent?.('webglcontextlost')
         }
       },
-      Scene: class { add(): void {} },
+      Scene: class { add(object: unknown): void { added.push(object) } },
       OrthographicCamera: class {},
       Vector3: class {
         constructor(public x = 0, public y = 0, public z = 0) {}
@@ -321,17 +333,32 @@ describe('the sphere texture binding', () => {
           return this
         }
       },
+      /**
+       * Three's own contract, kept because the orientation's layout is
+       * what a test of it has to check: `set` takes its nine arguments
+       * **row-major** and `elements` stores them **column-major**, which
+       * is what reaches a GLSL `mat3`.
+       */
+      Matrix3: class {
+        elements = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+        set(...m: number[]): this {
+          this.elements = [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]
+          return this
+        }
+      },
       ShaderMaterial: class {
         uniforms: Record<string, { value: unknown }>
         fragmentShader: string
         constructor(args: {
           uniforms: Record<string, { value: unknown }>
           fragmentShader: string
+          vertexShader: string
         }) {
           this.uniforms = args.uniforms
           this.fragmentShader = args.fragmentShader
           uniformsSeen.push(args.uniforms)
           shadersSeen.push(args.fragmentShader)
+          vertexShadersSeen.push(args.vertexShader)
         }
         dispose(): void { disposed.push('material') }
       },
@@ -363,6 +390,17 @@ describe('the sphere texture binding', () => {
       NoColorSpace: 'NoColorSpace',
       ClampToEdgeWrapping: 'ClampToEdgeWrapping',
       PlaneGeometry: class { dispose(): void { disposed.push('geometry') } },
+      // A warp's geometry: named buffers, as Three's `setAttribute` keeps them.
+      BufferGeometry: class {
+        attributes: Record<string, { array: Float32Array; itemSize: number }> = {}
+        setAttribute(name: string, attribute: { array: Float32Array; itemSize: number }): void {
+          this.attributes[name] = attribute
+        }
+        dispose(): void { disposed.push('warpGeometry') }
+      },
+      BufferAttribute: class {
+        constructor(public array: Float32Array, public itemSize: number) {}
+      },
       // Retains its constructor args, as the real Mesh does: `dispose()`
       // reaches through `quad.geometry`, and a fake that drops them
       // would make the teardown path untestable.
@@ -374,7 +412,7 @@ describe('the sphere texture binding', () => {
         ) {}
       },
     }
-    return { THREE_: THREE_ as never, uniformsSeen, shadersSeen, disposed, sized }
+    return { THREE_: THREE_ as never, uniformsSeen, shadersSeen, vertexShadersSeen, disposed, sized, added }
   }
 
   function fakeEarth(base: FakeTexture, upgrade?: FakeTexture) {
@@ -454,6 +492,146 @@ describe('the sphere texture binding', () => {
   }
 
   const canvas = () => fakeCanvas().el
+
+  it('draws the unwarped frame for sos-equirect, and nothing into a warp window\'s projectors', async () => {
+    const visibleFor = async (mode?: OutputMode): Promise<unknown> => {
+      const three = fakeThree()
+      await createOutputScene(
+        { canvas: canvas(), mode },
+        { loadThree: async () => three.THREE_, createEarth: fakeEarth({ id: 'base' }).createEarth },
+      )
+      return (three.added[0] as { visible?: boolean }).visible
+    }
+    expect(await visibleFor()).toBe(true)
+    expect(await visibleFor('sos-equirect')).toBe(true)
+    // No warp set is held, so the quad — the unwarped frame — would be
+    // thrown across projectors calibrated for a warp. Black instead.
+    expect(await visibleFor('projector-warp')).toBe(false)
+  })
+
+  describe('a projector-warp window (rung 16)', () => {
+    /** The smallest mesh the parser accepts: 2×2, 16:9, every node drawn. */
+    const MESH = ['2', '2 2', '-1.777778 1 0.25 0.75 1', '1.777778 1 0.75 0.75 1', '-1.777778 -1 0.25 0.25 0.5', '1.777778 -1 0.75 0.25 0.5', ''].join('\n')
+    const SET: OutputWarpSet = {
+      id: '0123456789abcdef',
+      texture: null,
+      meshes: [
+        { id: 'P1', viewport: { x: 0, y: 0, w: 0.5, h: 0.5 }, text: MESH },
+        { id: 'P2', viewport: { x: 0.5, y: 0, w: 0.5, h: 0.5 }, text: MESH },
+      ],
+    }
+
+    async function warpScene(client: { width: number; height: number } = { width: 1280, height: 720 }) {
+      const three = fakeThree()
+      const el = canvas() as HTMLCanvasElement & { clientWidth: number; clientHeight: number }
+      Object.defineProperty(el, 'clientWidth', { configurable: true, get: () => client.width })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => client.height })
+      let resize: (() => void) | null = null
+      let unobserved = false
+      const scene = await createOutputScene(
+        { canvas: el, mode: 'projector-warp' },
+        {
+          loadThree: async () => three.THREE_,
+          createEarth: fakeEarth({ id: 'base' }).createEarth,
+          observeSize: (_canvas, onResize) => {
+            resize = onResize
+            onResize()
+            return () => { unobserved = true }
+          },
+        },
+      )
+      const quad = three.added[0] as { visible: boolean; geometry: { attributes?: Record<string, { array: Float32Array; itemSize: number }> } }
+      return { three, scene, quad, client, resize: () => resize?.(), unobserved: () => unobserved }
+    }
+
+    it('builds its material with the warp stages, and draws nothing until it holds a set', async () => {
+      const { three, scene, quad } = await warpScene()
+      expect(three.vertexShadersSeen[0]).toBe(WARP_VERTEX_SHADER)
+      expect(three.shadersSeen[0]).toContain('vec2 vUv = warpFrameUv(vWarpDirection);')
+      expect(quad.visible).toBe(false)
+      expect(scene.warpState()).toEqual({ state: 'none' })
+    })
+
+    it('draws a set as its geometry: positions, directions and weights, per vertex', async () => {
+      const { scene, quad } = await warpScene()
+      scene.consumeDirty()
+
+      scene.setWarp(SET)
+
+      const attributes = quad.geometry.attributes as Record<string, { array: Float32Array; itemSize: number }>
+      // Two cells, two triangles each, three vertices apiece.
+      expect(attributes.position.array.length).toBe(4 * 3 * 3)
+      expect(attributes[WARP_ATTRIBUTES.direction].itemSize).toBe(3)
+      expect(attributes[WARP_ATTRIBUTES.weight].array.length).toBe(4 * 3)
+      expect(quad.visible).toBe(true)
+      expect(scene.warpState()).toEqual({ state: 'drawn', id: SET.id, meshes: 2, triangles: 4, droppedWide: 0 })
+      // The set reaches the glass now, not at the next 1 Hz floor.
+      expect(scene.consumeDirty()).toBe(true)
+    })
+
+    it('rebuilds nothing for the same set arriving again, as it does on every resync', async () => {
+      const { three, scene, quad } = await warpScene()
+      scene.setWarp(SET)
+      const drawn = quad.geometry
+
+      scene.setWarp({ ...SET, meshes: [...SET.meshes] })
+
+      expect(quad.geometry).toBe(drawn)
+      expect(three.disposed.filter(d => d === 'warpGeometry')).toEqual([])
+    })
+
+    it('draws nothing for a set the warp check refuses, and says which refusal', async () => {
+      const { scene, quad } = await warpScene()
+      scene.setWarp(SET)
+
+      scene.setWarp({ id: 'fedcba9876543210', texture: null, meshes: [SET.meshes[0], { ...SET.meshes[1], viewport: SET.meshes[0].viewport }] })
+
+      expect(quad.visible).toBe(false)
+      expect(scene.warpState()).toMatchObject({ state: 'refused', refusal: { code: 'overlap' } })
+      scene.setWarp(null)
+      expect(scene.warpState()).toEqual({ state: 'none' })
+    })
+
+    it('applies a gamma that is one, and falls back for one that is not', async () => {
+      const { three, scene } = await warpScene()
+      const uniforms = three.uniformsSeen[0]
+      expect(uniforms[WARP_UNIFORMS.blendGamma].value).toBe(DEFAULT_BLEND_GAMMA)
+      scene.setBlendGamma(1.8)
+      expect(uniforms[WARP_UNIFORMS.blendGamma].value).toBe(1.8)
+      scene.setBlendGamma(-1)
+      expect(uniforms[WARP_UNIFORMS.blendGamma].value).toBe(DEFAULT_BLEND_GAMMA)
+    })
+
+    it('sizes its buffer from its own canvas, never from the ladder', async () => {
+      const { three, scene, client, resize, unobserved } = await warpScene({ width: 1920, height: 1080 })
+      expect(scene.size).toEqual({ width: 1920, height: 1080 })
+
+      // A rung would squeeze the projectors; the ladder is sos-equirect's.
+      scene.setFramebufferWidth(8192)
+      expect(scene.size).toEqual({ width: 1920, height: 1080 })
+
+      client.width = 3840
+      client.height = 2160
+      resize()
+      expect(scene.size).toEqual({ width: 3840, height: 2160 })
+      expect(three.sized[three.sized.length - 1]).toEqual([3840, 2160, false])
+
+      scene.dispose()
+      expect(unobserved()).toBe(true)
+    })
+
+    it('is inert in an sos-equirect window', async () => {
+      const three = fakeThree()
+      const scene = await createOutputScene(
+        { canvas: canvas() },
+        { loadThree: async () => three.THREE_, createEarth: fakeEarth({ id: 'base' }).createEarth },
+      )
+      scene.setWarp(SET)
+      expect(scene.warpState()).toBeNull()
+      expect((three.added[0] as { visible: boolean }).visible).toBe(true)
+      expect(three.vertexShadersSeen[0]).not.toBe(WARP_VERTEX_SHADER)
+    })
+  })
 
   it('binds a real texture from the first frame, never null', async () => {
     const three = fakeThree()
@@ -592,7 +770,7 @@ describe('the sphere texture binding', () => {
 
     it('keeps the projection across a recompile', async () => {
       const { three, scene } = await build()
-      scene.setParams({ cameraOffset: { x: 0.4, y: 0, z: 0 }, split: true, rotationOffsetRad: 0 })
+      scene.setParams({ cameraOffset: { x: 0.4, y: 0, z: 0 }, orientation: IDENTITY_ORIENTATION, split: true, rotationOffsetRad: 0 })
 
       scene.setLayers([layer()])
 
@@ -605,6 +783,31 @@ describe('the sphere texture binding', () => {
       }
       expect(offset.x).toBe(0.4)
       expect(three.uniformsSeen[1][EQUIRECT_UNIFORMS.split].value).toBe(true)
+    })
+
+    it('uploads the orientation as the matrix it is, not its transpose', async () => {
+      // `EquirectParams.orientation` is row-major and a GLSL `mat3` is
+      // column-major; Three's `set` is what bridges the two. Passing the
+      // tuple anywhere that takes column-major would upload the inverse
+      // turn — the pole would come round to the front from the wrong
+      // side, and only off the equator, so nothing obvious would say so.
+      const { three, scene } = await build()
+      const m = followOrientation(-80, 30, 25)
+      scene.setParams({ ...IDENTITY_PARAMS, orientation: m })
+
+      const uploaded = three.uniformsSeen[0][EQUIRECT_UNIFORMS.orientation].value as { elements: number[] }
+      // Column-major: element `col * 3 + row` is row `row`, column `col`.
+      for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 3; col++) {
+          expect(uploaded.elements[col * 3 + row]).toBe(m[row * 3 + col])
+        }
+      }
+    })
+
+    it('starts unturned, so a window opens on the uniform unwrap', async () => {
+      const { three } = await build()
+      const uploaded = three.uniformsSeen[0][EQUIRECT_UNIFORMS.orientation].value as { elements: number[] }
+      expect(uploaded.elements).toEqual([1, 0, 0, 0, 1, 0, 0, 0, 1])
     })
 
     it('does not recompile for a metadata-only change', async () => {

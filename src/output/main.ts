@@ -27,7 +27,7 @@
  */
 
 import './output.css'
-import { CALIBRATION_OVERLAY, createCalibrationCache } from './calibrationPattern'
+import { CALIBRATION_OVERLAY, MAX_PATTERN_WIDTH, createCalibrationCache } from './calibrationPattern'
 import { createDatasetMirror } from './datasetMirror'
 import {
   OVERLAY_REFRESH_MS,
@@ -52,7 +52,11 @@ import {
 import type { LinkHealth } from './linkWatchdog'
 import type { SyncOutcome } from './outputSync'
 import { createFullscreenController, resolveChromeHost } from '../services/windowChrome'
-import type { OutputGlobeState, OutputRenderConfig } from '../services/multiOutput/protocol'
+import {
+  outputModeFromQuery,
+  type OutputGlobeState,
+  type OutputRenderConfig,
+} from '../services/multiOutput/protocol'
 import { logger } from '../utils/logger'
 
 /** The same gate `bootMultiOutput` applies on the control side. */
@@ -70,7 +74,19 @@ async function boot(): Promise<void> {
     return
   }
 
-  const scene = await createOutputScene({ canvas })
+  // The geometry comes from this window's own URL, which the manager
+  // wrote before any IPC existed — never from the first view that
+  // arrives, or the check that a view is meant for this window would be
+  // vacuous. A mode this build does not know draws nothing rather than
+  // falling back to `sos-equirect`: an unwarped picture thrown across
+  // projectors calibrated for a warp is worse than black.
+  const mode = outputModeFromQuery(window.location.search)
+  if (mode === null) {
+    logger.error(`[Output] this window's URL names a mode this build does not render: ${window.location.search}`)
+    return
+  }
+
+  const scene = await createOutputScene({ canvas, mode })
   const mirror = createDatasetMirror()
   /** Per-frame work the link installs, if it attached. Empty on the web
    *  fixture page, where the loop is just the idle Earth. */
@@ -200,6 +216,7 @@ async function boot(): Promise<void> {
     gpu: gpuName(),
     gpuState: scene.gpuState(),
     framebuffer: scene.size,
+    warp: scene.warpState(),
   }))
 
   // The picture cannot survive a context loss, so the first frame after
@@ -225,7 +242,7 @@ async function boot(): Promise<void> {
     createFullscreenController({ host: resolveChromeHost(), initial: true })
 
     try {
-      const link = await connectOutputLink(await createTauriLinkHost())
+      const link = await connectOutputLink(await createTauriLinkHost(), mode)
       readLinkHealth = () => link.linkHealth()
       readCalibration = () => link.renderConfig().calibration
 
@@ -288,7 +305,13 @@ async function boot(): Promise<void> {
       // testable. What is left here is the substitution.
       const calibrationCache = createCalibrationCache()
       const calibrationLayer = (): OutputLayerInput | null => {
-        const canvas = calibrationCache.canvasFor(link.renderConfig().framebufferWidth)
+        // A warp window has no rung: its pattern is drawn at the pattern's
+        // own cap, and its readout names the display the window actually
+        // spans, since that is the number an operator there is confirming.
+        const canvas =
+          mode === 'projector-warp'
+            ? calibrationCache.canvasFor(MAX_PATTERN_WIDTH, `${scene.size.width} × ${scene.size.height}`)
+            : calibrationCache.canvasFor(link.renderConfig().framebufferWidth)
         return canvas ? { kind: 'image', element: canvas, overlay: CALIBRATION_OVERLAY } : null
       }
 
@@ -376,7 +399,13 @@ async function boot(): Promise<void> {
        * size, and `setVisible` on an unchanged flag costs one repaint.
        */
       const applyConfig = (config: OutputRenderConfig): void => {
+        // No-ops in a warp window, which sizes itself from its canvas.
         scene.setFramebufferWidth(config.framebufferWidth)
+        // No-ops in any other mode. `setWarp` compares the set's content
+        // id, so the whole set arriving again on every resync costs a
+        // string compare rather than a geometry rebuild.
+        scene.setWarp(config.warp)
+        scene.setBlendGamma(config.blendGamma)
         overlay.setVisible(config.debugOverlay)
         // After the width is applied, not before: `calibrationLayer()`
         // reads the config's width to decide whether its cached canvas

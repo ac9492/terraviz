@@ -1,8 +1,9 @@
 # Multi-monitor output — operator runbook
 
 Status: first edition, written from two Windows hardware passes and
-one Linux (WSL) sitting.
-Last reviewed: 2026-09-19
+one Linux (WSL) sitting. §3.6 (projector rigs) was added 2026-09-29,
+before any projector rig has run it.
+Last reviewed: 2026-09-29
 
 This is the deployment half of
 [`MULTI_MONITOR_PLAN.md`](MULTI_MONITOR_PLAN.md) — rung 15 of its
@@ -180,6 +181,21 @@ is invisible with no way to tell which.
 leave no display flagged at all. The panel reports what the
 platform says rather than guessing.
 
+**Track operator camera** is on for a new output, and it makes the
+control globe the sphere's remote. Wherever you centre the control
+globe, the sphere turns so that place faces its **front**, the same
+way up as on the control globe, and your zoom magnifies it there.
+This is how a pole reaches an audience: drag the control globe to
+Antarctica and Antarctica comes round to the front, on the equator.
+A right-drag or a two-finger twist on the control globe turns the
+picture on the sphere too. Tilting the control globe does not.
+
+The front is latitude 0 on the meridian the **rotation offset**
+names (§3.4), so the rotation decides which side of the sphere faces
+the room. With tracking off, the sphere shows a fixed map — the
+prime meridian at that same meridian, unzoomed — whatever you do on
+the control globe.
+
 ### 3.2 Framebuffer is not monitor resolution
 
 The panel shows two numbers and they are different things:
@@ -196,6 +212,11 @@ sphere from a 1080p preview screen.
 
 Start at 4096×2048. Go higher only if the sphere's own resolution
 justifies it, and re-read §4 afterwards.
+
+A **projector-rig** output (§3.6) has no framebuffer picker. It
+draws at the spanned display's own pixel size, because a warp
+addresses the projectors' pixels directly, and the panel shows
+that size where the picker would be.
 
 ### 3.3 Measuring this machine's decoder budget
 
@@ -233,7 +254,11 @@ Two controls, used together and in this order:
    dataset will.
 2. **Rotation offset** — turns the projection to match how the
    sphere is physically mounted. Drag the slider while watching
-   the sphere; type a number to reproduce a known value.
+   the sphere; type a number to reproduce a known value. With
+   **Track operator camera** on, it says which side of the sphere
+   is the front: the side the control globe's centre turns to.
+   Centre the control globe on (0°, 0°), north up, and turn the
+   offset until the pattern's centre crosshair faces the room.
 
 Calibration is done **one sphere at a time** — a four-output rig
 is four differently-mounted spheres, and the pattern appears only
@@ -250,6 +275,10 @@ property of the room and comes back next launch. The test pattern
 is a property of the afternoon, and an installation that restored
 with it on would show no data at all.
 
+On a projector rig the same control is labelled **content
+rotation** and means something narrower — read §3.6 before
+touching it there.
+
 ### 3.5 Restore on launch
 
 Off by default, and deliberately: an operator who added an output
@@ -261,6 +290,283 @@ launch, matched on monitor name **and** signed physical origin —
 a name-only match can restore onto a physically different monitor
 while looking like it worked. A monitor that no longer matches is
 skipped and logged rather than guessed at.
+
+### 3.6 Projector rigs: importing a sphere-sim warp
+
+Everything above assumes a display that takes the equirectangular
+image as it is: an LED sphere, or a dome's own player. A sphere lit
+by **projectors** needs one more thing, a **warp**. It says where
+each projector's pixels land on the sphere, and how brightly to
+draw them where two projectors overlap. sphere-sim calibrates the
+rig and exports the warp; this app draws it.
+
+> **Not yet run on a projector rig.** This section is written from
+> the code and from off-hardware checks. Nobody has drawn a warp on
+> a sphere with it yet. The checks a first run should pass are
+> steps W1–W9 in `MULTI_MONITOR_PLAN.md` Appendix B.
+
+#### Span the projectors into one display
+
+An output fills exactly one monitor, and a warp places every
+projector's picture inside that one window. So the projector heads
+must reach the app as **one monitor at their combined size**:
+3840×2160 for SOS's four 1920×1080 projectors in a 2×2 grid.
+
+| Route | Notes |
+|---|---|
+| NVIDIA Mosaic | NVIDIA's control panel, or `nvidia-settings` on Linux. Which grids a card offers is NVIDIA's question, so confirm 2×2 is one of them before an SOS rig depends on it |
+| AMD Eyefinity | AMD's own control software; the same caveat |
+| `xrandr --setmonitor` | Linux, **X11 only**; no Wayland equivalent. Below |
+
+**Each head goes where its projector's part of the display is.**
+For SOS that is the arrangement SOS itself uses: P1 bottom left, P2
+bottom right, P3 top left, P4 top right. A current bundle's layout
+says where each mesh goes on the display, and the import draws it;
+nothing can say which cable feeds which head. This is the one thing a
+warp cannot check. A projector fed the wrong part still shows a
+plausible globe, just not the right part of it.
+
+On Linux without a vendor span, place the heads, then declare them
+one monitor. `<P1>` and the others are the names a bare `xrandr`
+prints for the outputs cabled to those projectors (`DP-1`,
+`HDMI-0`, …). X counts from the top left:
+
+```bash
+xrandr --output <P3> --mode 1920x1080 --pos 0x0 \
+       --output <P4> --mode 1920x1080 --pos 1920x0 \
+       --output <P1> --mode 1920x1080 --pos 0x1080 \
+       --output <P2> --mode 1920x1080 --pos 1920x1080
+xrandr --setmonitor SPHERE auto <P1>,<P2>,<P3>,<P4>
+```
+
+This lasts until the X session ends, so run it wherever the
+installation's session starts.
+
+**Confirm it took, twice.**
+
+1. Tools → Outputs lists **one** monitor at the combined size. If
+   it lists four, the heads are not spanned, and no setting in this
+   app can place one window across them.
+2. Once the output exists, its HUD's **buf** line names the
+   combined size — before any warp is imported, since the HUD does
+   not need one. A single projector's size means the desktop
+   fullscreened the window onto one head, which a desktop that does
+   not honour a user-defined monitor would do; a vendor span is the
+   route to try then.
+
+#### Add the output and import the warp
+
+1. Add an output on the spanned monitor with **Output type →
+   Projector rig (sphere-sim warp)**. The type is fixed for the life
+   of the output; to change it, remove the output and add it again.
+2. The new output draws **nothing**. The projectors go black, and
+   the row says there is no warp set. That is deliberate: an
+   unwarped globe thrown across calibrated projectors is exactly
+   what this mode exists never to show.
+3. **Import warp…** and pick the ZIP as sphere-sim exported it. A
+   bundle that was extracted and zipped again is usually refused.
+   Get the original if you can: the `.data` files from its `warp`
+   folder, picked all at once, also import, but they arrive without
+   the layout beside them, so step 6's question follows.
+4. **Never pick files from `restore/warp/`.** The bundle's
+   `restore` folder keeps the *previous* calibration, in the same
+   format and under the same file names. The ZIP import ignores it.
+   A file picked by hand from there is imported as though it were
+   the new calibration.
+5. **A bundle from a current sphere-sim says where its meshes go**,
+   in a `layout.json` beside them. The panel lists the meshes it read
+   and draws the display with each one in its own place. It says what
+   rotation is already in them, and compares the display they were
+   solved for with this one. Check the drawing against the cabling
+   (above), then **Import**. There is nothing to choose: the bundle
+   decided, from the rig sphere-sim calibrated.
+6. **Anything that does not say where its meshes go** — loose `.data`
+   files, or a bundle exported before sphere-sim added the layout —
+   gets a question instead: **Import as equirectangular in SOS
+   quadrants**, or **Cancel**. A diagram shows each mesh in the
+   quadrant it would take. The answer states two things the files
+   cannot: where each mesh goes, and that it addresses an
+   equirectangular frame.
+   - An SOS rig from sphere-sim: import.
+   - **Any other rig: cancel**, and import the ZIP from a current
+     sphere-sim instead. A rig sphere-sim placed itself, such as two
+     projectors or a row of four, reuses SOS's projector names in other
+     places. The quadrants would send every mesh to the wrong projector,
+     and the picture would still look right.
+   - **A mesh from a dome or mirror tool** (meshmapper and its kind):
+     cancel. Those address a fisheye frame, which this app does not
+     draw, and nothing in the file says so. Imported anyway, a mesh
+     like that draws a smooth, convincing globe that is wrong: the
+     whole world squeezed into the projector's disc. Renaming one to
+     `P1.data` to get past a refusal is how it would get this far.
+7. Once imported, the row reads *Drawing 4 meshes: P1, P2, P3, P4*.
+   The HUD's `warp` line gives the set's id and the same count (§4).
+
+**A `layout.json` this build cannot read refuses the import**; it
+never falls back to the question. The likeliest reason is a newer
+sphere-sim, and the message names the format it found. The remedy is
+a newer build of this app, not a different file.
+
+**So does a `layout.json` that says its meshes address anything but
+an equirectangular frame** — a fisheye, say, or a model's own texture
+layout. No sphere-sim writes that yet. Here the file is not broken:
+it was made for a picture this app does not draw, and the remedy is a
+different file.
+
+**A stretch warning before the import** means the part of this
+display a mesh would fill is not the shape it was solved for. The usual cause
+is a 4096×2160 span, whose 2048×1080 quadrants stretch a 16:9
+calibration by 7%. Span at the resolution the calibration used —
+1920×1080 per projector for SOS — rather than accept it, unless you
+know the lenses compensate. When every projector is stretched by the
+same amount, the panel says so once. For a bundle, which names the
+display it was solved for, that line reads *Solved for a 7680×4320
+display, but this one is 3840×2400…*: the cause is the display, not
+the meshes. Projectors are named only where the display does not
+explain everything. That happens with loose files, which name no
+display, or with a mesh that does not fit even the display its bundle
+was solved for.
+
+**Importing on a desk monitor to look at a bundle is harmless.** The
+monitor is rarely the rig's shape, so the preview carries the stretch
+warning, and each quadrant's disc comes out slightly oval. Nothing is
+wrong with the calibration: import it again on the spanned display.
+
+**The app keeps its own copy of the warp.** After the import it no
+longer needs the file, so a calibration can arrive on a USB stick
+that then leaves the building. Keep the file anyway. The copy lives
+in this app's storage on this machine, which a new machine, or a
+reinstall that clears the app's data, does not carry. A warp takes
+about 80 KB per projector at sphere-sim's default 41×41 grid. A much
+finer export of a many-projector rig can run into the storage
+limit, and the import then says there is no room rather than
+keeping part of it.
+
+**Track operator camera** and **Split sphere** work through the
+warp as they do on an LED sphere (§3.1). The front is where the warp
+puts the middle of its texture, turned by the content rotation.
+
+#### Set the blend gamma
+
+Where two projectors overlap, each draws a share of the picture.
+The shares are meant to add up to one projector's worth of light,
+and they do only if the app knows the projectors' gamma. That is
+**Blend gamma** in the row: 2.2 unless your calibration says
+otherwise.
+
+Check it in a darkened room:
+
+1. Turn on the calibration pattern. Its grey ramp runs round the
+   equator in eight flat steps, so every seam crosses it.
+2. Use the content rotation to bring a mid-grey step onto a seam.
+3. Compare the overlap with the single-projector grey either side.
+
+| The overlap looks | Blend gamma |
+|---|---|
+| the same | leave it |
+| slightly darker | raise it, 0.05 at a time |
+| slightly brighter | lower it |
+| about half as bright, on every seam | **not a gamma problem** — the blend is being applied wrongly. Report it with a photo |
+
+Check every seam before settling on a number, and put the content
+rotation back afterwards.
+
+Overlaps also look lighter where the picture is **black**, because
+two projectors' black levels add. That is not the gamma, and a warp
+has nowhere to correct it.
+
+#### Leave the rig's rotation alone
+
+sphere-sim bakes the rig's own mechanical rotation into the warp.
+So on a projector rig the rotation control is labelled **Content
+rotation**. It turns the picture on top of whatever the warp maps,
+and it starts at 0.
+
+**Do not copy the rotation from SOS's own configuration into it.**
+That rotation is already in the warp, and entering it again turns
+every picture twice. Leave the content rotation at 0, turn on the
+calibration pattern, and check that the prime meridian sits where
+the calibration put it.
+
+Below the rotation, the row shows the warp's own rotation, as the
+bundle's `layout.json` states it. That note gives the number for a
+sphere, and says none for a model, whose own texture layout anchors
+it. For loose files or an older bundle it says *unknown*: nothing
+stated the rotation, and the app does not guess it from the rig.
+
+#### Edges you should expect
+
+A warp file describes each projector on a coarse grid, 41×41 by
+default, and says nothing about where between two grid points the
+sphere's edge falls. The app works that out from how the grid bunches
+up near the edge, and draws each projector's picture out to it,
+fading out. Check the edges with the calibration pattern on, all the
+way round each projector's picture.
+
+On some rigs, the Boulder rig among them, the sides of each picture
+end well inside the sphere's edge. The blend hands that part of the
+sphere to the neighbouring projector, and this projector's share falls
+to zero before its own edge. The warp file gives the share only at its
+grid points, so the app follows its trend between them and ends the
+picture where it reaches zero.
+
+What you should see is a curved edge that fades out, and pictures that
+hand over along smooth curves. What is left over is not a fault in
+this app:
+
+- **A short step where the grid runs along the edge**, at the top,
+  bottom and sides of each projector's picture: the grid gives
+  nothing to go on there, so the picture reaches halfway into that
+  cell of the grid and stops.
+- **An edge a few pixels off**, now and then about 15 px on the
+  Boulder rig's meshes. Where it lands past the sphere, a faint
+  sliver of light can reach the wall behind it.
+- **The ring of grid cells just inside the edge is the least
+  accurate.** The graticule can sit a few pixels off across an
+  overlap there, up to about 28 px on the Boulder rig's meshes.
+- **A rim that stays bright to the edge at the top and bottom of each
+  picture**, on a rig whose blend darkens the poles, as the Boulder
+  rig's does.
+  The darkening falls between the grid's last point and the edge,
+  where the file says nothing.
+  [sphere-sim#55](https://github.com/zyra-project/sphere-sim/issues/55)
+  asks sphere-sim's exporter to record it.
+
+All four come from the grid's resolution. If any is objectionable,
+export again from sphere-sim with a finer grid (`cols` / `rows`).
+
+**Judge the edges on the sphere, not on a desk monitor.** A monitor
+shows each projector's picture alone. A sliver drawn at 3% of full
+brightness adds 3% to the neighbouring projector's light on the
+sphere, but on the monitor it reads as a 20% grey.
+
+A **staircase along the whole edge**, up to one grid cell deep, is a
+fault: the edge is not being reconstructed. So are **steps down the
+sides** of each picture, up to a grid cell wide, where it hands over
+to its neighbour: the share is not being followed down to zero. So is
+a **bright rim** well past the edge. Any of these belongs in a bug
+report with the warp file.
+
+#### Restore, and a warp that will not load
+
+With restore on (§3.5), a projector-rig output comes back with its
+warp, its blend gamma and its content rotation.
+
+- **Power the projectors and apply the span before launching.**
+  Restore looks for the spanned monitor by name and position. If it
+  is missing at launch, the output is skipped and dropped from the
+  saved configuration. Add it again and re-import the same file; the
+  app still has the warp, and the import lands on it.
+- **A warp that cannot be read costs its own output and nothing
+  else.** The row says the warp could not be read and asks for it
+  again, those projectors stay black, and every other output
+  restores normally. Re-import the file.
+
+Removing the output — from the panel, or by closing its window —
+deletes the app's copy of its warp, unless another output uses it.
+So do **Clear warp** and importing another warp over it. A crash
+does not. Closing the window counts as removing the output, so use
+F11 (§6) to get at the desktop behind it instead.
 
 ---
 
@@ -286,7 +592,8 @@ gpu    ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 …)
 | **link** | contact with the control window | `live` |
 | **fps (raf)** | frames drawn, against callbacks the browser offered | see below |
 | **draw** | mean time inside one render call | see below |
-| **buf** | the framebuffer, deliberately not the window | the rung you picked |
+| **warp** | projector rigs only, under **data**: the warp being drawn, as its id and mesh count | one mesh per projector, and never a `dropped` count on a sphere — see below |
+| **buf** | the framebuffer, deliberately not the window | the rung you picked — or, on a projector rig, the spanned display's own size |
 | **gpu** | render adapter, plus context state if not healthy | a discrete card — **and not readable on Linux**, see §1.1 |
 
 **Read fps and raf as a pair.** Neither means much alone:
@@ -309,6 +616,15 @@ when the GPU is saturated. On Linux the path is synchronous and
 the same field reads the real cost — 302 ms was measured on an
 iGPU under a translation layer. A sub-millisecond `draw` is not
 proof of headroom unless you know which platform you are on.
+
+**The `warp` line** appears on projector-rig outputs only (§3.6):
+
+| Reads | Means |
+|---|---|
+| `warp  1a2b3c4d · 4 meshes` | drawing that warp, one mesh per projector |
+| `warp  none — import a set …` | drawing **nothing**: no warp imported, or the saved one could not be read. The Outputs panel row says which |
+| `warp  refused — <code>` | handed a warp it would not draw. The panel checks every warp by the same rules first, so this should never appear; report it with the code |
+| `· 12 dropped` after the count | that many triangles too wide to draw. Never on a sphere; it means a damaged mesh, or a surface whose texture is laid out in pieces |
 
 ---
 
@@ -382,6 +698,19 @@ title bar, no menu bar. Exits:
   notices, badges it and keeps it in the restore config — it does
   not respawn it. Three crashes on one monitor stop new outputs
   going there for the session; relaunching clears that.
+- **A projector rig on hardware.** §3.6 has not been run on one.
+  The first run's checks are `MULTI_MONITOR_PLAN.md` Appendix B,
+  steps W1–W9.
+- **A placed rig from sphere-sim's page.** The bundle format carries
+  any layout, and this app reads it, but sphere-sim's page exports
+  from the install rig, so every bundle it writes today places SOS's
+  quadrants. A placed rig's bundle has to come from sphere-sim's own
+  builders until the page exports one.
+- **Spanning on Linux.** `xrandr --setmonitor` needs X11, and the
+  only X11 run so far — under WSL — aborted when an output window
+  opened. Whether WSL caused it is unsettled; see the plan's
+  Appendix B, "second-window abort". On a Linux projector rig, add
+  one output before anything else.
 
 ---
 
