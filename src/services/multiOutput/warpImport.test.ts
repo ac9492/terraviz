@@ -4,7 +4,14 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { MAX_WARP_MESHES, SOS_QUADRANT_VIEWPORTS, type SosQuadrantId, type WarpSetEntry } from '../../output/projectorWarp'
+import {
+  MAX_WARP_MESHES,
+  SOS_QUADRANT_VIEWPORTS,
+  buildWarpGeometry,
+  parseWarpMesh,
+  type SosQuadrantId,
+  type WarpSetEntry,
+} from '../../output/projectorWarp'
 import { crc32 } from './storedZip'
 import {
   MAX_WARP_IMPORT_BYTES,
@@ -136,6 +143,50 @@ const laidOut = (text: string, name = 'layout.json'): WarpImportFile =>
     { name: 'warp/P1.data', text: MESH },
     { name: 'warp/P2.data', text: MESH },
   ])
+
+/**
+ * A mesh made for a fisheye frame, the shape dome and mirror tools write —
+ * meshmapper's, for a mirror dome, are the commonest Bourke meshes there
+ * are. Synthetic, not any tool's output: 16:9 at 41×23, the raster's drawn
+ * region an ellipse across 90% of its width and all of its height, mapped
+ * onto an angular fisheye of a 180° hemisphere (the disc inscribed in
+ * [0, 1]², the zenith at its centre) with a mirror's compression towards
+ * the rim and a weight that falls with it. Every node outside the ellipse
+ * reaches nothing.
+ *
+ * Nothing in it says fisheye: `x` spans ±aspect, `y` spans ±1, and every
+ * drawn `(u, v)` is in [0, 1]. Read as equirect the disc is the whole
+ * world — its centre (0°, 0°), its top and bottom the poles, its sides the
+ * antimeridian — and neighbouring texels stay neighbouring directions all
+ * the way round, so no triangle comes out wider than a cell.
+ */
+function fisheyeMesh(): string {
+  const cols = 41
+  const rows = 23
+  const aspect = 16 / 9
+  const lines = ['2', `${cols} ${rows}`]
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const x = ((2 * i) / (cols - 1) - 1) * aspect
+      const y = 1 - (2 * j) / (rows - 1)
+      const ex = x / (0.9 * aspect)
+      const r = Math.hypot(ex, y)
+      if (r > 1) {
+        lines.push(`${x.toFixed(6)} ${y.toFixed(6)} -1 -1 -1`)
+        continue
+      }
+      // Off the zenith as a fraction of 90°, compressed towards the rim.
+      const zenith = r * (1.15 - 0.15 * r)
+      const azimuth = Math.atan2(ex, y)
+      const u = 0.5 + 0.5 * zenith * Math.sin(azimuth)
+      const v = 0.5 + 0.5 * zenith * Math.cos(azimuth)
+      lines.push(`${x.toFixed(6)} ${y.toFixed(6)} ${u.toFixed(6)} ${v.toFixed(6)} ${(1 - 0.3 * r * r).toFixed(6)}`)
+    }
+  }
+  return `${lines.join('\n')}\n`
+}
+
+const FISHEYE = fisheyeMesh()
 
 describe('readWarpSources — a sphere-sim bundle', () => {
   it('takes the four meshes at the root, in rig order, and names where each came from', () => {
@@ -414,6 +465,46 @@ describe("readWarpSources — a bundle's own layout (sphere-sim#52)", () => {
     expect(refusalOf([laidOut(overlap)])).toEqual({ code: 'set', set: { code: 'overlap', ids: ['P1', 'P2'] } })
     const outside = layoutText({ projectors: [base.projectors[0], { ...base.projectors[1], viewport: { x: 0.6, y: 0, w: 0.5, h: 1 } }] })
     expect(refusalOf([laidOut(outside)])).toMatchObject({ code: 'set', set: { code: 'bad-viewport' } })
+  })
+})
+
+describe('a mesh made for a fisheye frame', () => {
+  /** A one-projector dome as a bundle's layout would place it: the whole display. */
+  const domeLayout = (over: Record<string, unknown> = {}): string =>
+    layoutText({
+      framebuffer: { width: 1920, height: 1080 },
+      projectors: [{ id: 'P1', mesh: 'warp/P1.data', viewport: { x: 0, y: 0, w: 1, h: 1 } }],
+      ...over,
+    })
+  const domeBundle = (over: Record<string, unknown> = {}): WarpImportFile =>
+    archive([
+      { name: 'layout.json', text: domeLayout(over) },
+      { name: 'warp/P1.data', text: FISHEYE },
+    ])
+
+  it('is what it claims: a disc of fisheye texels, reaching its rim', () => {
+    const parsed = parseWarpMesh(FISHEYE)
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.refusal))
+    const radii = parsed.mesh.nodes.filter((n) => n.drawable).map((n) => Math.hypot(n.u - 0.5, n.v - 0.5))
+    expect(Math.max(...radii)).toBeCloseTo(0.5, 6)
+  })
+
+  it('imports like any other, because nothing in the file says what its (u, v) address', () => {
+    // Loose, under a name SOS's quadrants can place, on the operator's answer;
+    // and in a bundle whose layout says nothing about (u, v), as none does yet.
+    const loose = assembleWarpSet(sources([file('P1.data', FISHEYE)]), 'sos-quadrants')
+    const read = readWarpSources([domeBundle()])
+    if (!read.ok || read.layout === null) throw new Error('the bundle carries a layout')
+    const bundled = assembleWarpSet(read.sources, read.layout)
+    for (const assembled of [loose, bundled]) {
+      if (!assembled.ok) throw new Error(JSON.stringify(assembled.refusal))
+      // And it draws. The width bound is the one geometric screen there is,
+      // and it drops nothing: neighbouring texels are neighbouring
+      // directions here too, the frame they come from is just the wrong one.
+      const [stats] = buildWarpGeometry(assembled.placed).meshes
+      expect(stats.triangles).toBeGreaterThan(0)
+      expect(stats.droppedWide).toBe(0)
+    }
   })
 })
 
