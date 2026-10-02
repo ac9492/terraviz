@@ -3186,7 +3186,7 @@ without rolling the whole feature back.
 | 13 | `multi-output: failure recovery — crashes, stalls, GPU loss, monitor unplug` | Manager gains crash detection (no-graceful-close window destroy → toast + record removal), 3-strikes-per-monitor crash storm guard, 2 s `availableMonitors()` poll for unplug detection, `getAll()` boot scan to reattach orphaned `output-*` windows after a control-window **page reload or webview failure** — not a crash of the process, which takes every window with it; see case 6, which corrects this. Output gains `webglcontextlost` / `webglcontextrestored` listeners with full scene rebuild, IPC-silence watchdog (5 s → stale state, 60 s → orphan), one HLS stream rebuild on a `loadStream()` rejection with frozen last-good-frame (no retry ladder — `hlsService` already spends a 3× budget before rejecting). Outputs panel renders per-output health badges (healthy / stale / stalled / monitor-missing). New Tier A `output_failure` event fired from manager via `analytics/emitter.ts` with `{ kind, retries, recovered }` (Open Question 3 decided). See §3 "Failure recovery". **Landed so far: 13a** (crash-vs-hand-close classification, the storm guard, record removal, `onOutputsChanged` for the panel), **13b** (all three Tier A events, `outputTelemetry.ts`), **case 3** (the output's `linkWatchdog`, the manager's `output_health_check` resync, the panel's stale badge and its announcement) and **case 6** (`adoptOrphanedOutputs`, `OUTPUT_REATTACH_EVENT`, chained ahead of the restore at boot) and **case 5's detection and reporting** (`outputScene.gpuState()`, `output_gpu_lost` / `output_gpu_recovered`, the `gpu-lost` badge and the `gpu-loss` Tier A failure — much smaller than this row implied, because Three's `WebGLRenderer` already does the `preventDefault()` and the GL rebuild; see case 5). Still open: the unplug poll, the single HLS rebuild, case 5's 30 s no-restore timeout and its `gpu-loss-timeout` removal, the toast (no toast primitive exists), and the `perf_sample` extension (needs an `OutputEvent` arm carrying drift — see Open Question 3). | Yes (additive) |
 | 14 | `multi-output: calibration tooling — test pattern + rotation offset` | `src/output/datasetMirror.ts` recognises the `__terraviz_calibration__` sentinel id and renders a procedural test pattern (8-step grayscale ramp at the equator, RGB color bars at lat ±30°, lat/lon graticule with color-coded equator + prime meridian, named anchor crosshairs, N/S pole labels, live resolution counter — ~80 LOC GLSL). `src/output/equirectRtt.ts` adds the `uRotationOffsetRad` longitude rotation applied before the camera-offset ray-march. `outputUI.ts` adds the per-output "Rotation offset (°)" numeric + slider and a "Calibration" submenu. Persisted config gains `rotationOffsetDeg`. See §3 "Calibration tooling". **Landed, in two slices, and the second is built differently from this row.** **14a** is the rotation offset end to end: `uRotationOffsetRad` and its TS mirror, `rotationOffsetDeg` through `OutputViewSettings` and the persisted config, the degrees→radians conversion in `projectView`, and the panel's slider-plus-number. **14b** is the test pattern, as `src/output/calibrationPattern.ts` — a **2:1 canvas installed in an ordinary overlay slot**, not the ~80 LOC of GLSL this row specifies, and a **per-output switch on the render-config channel**, not the `__terraviz_calibration__` sentinel dataset. Both departures are argued at the top of §3 "Calibration tooling": a shader pattern would bypass the very sampling path it is meant to prove, and a sentinel dataset would put the pattern on every output at once — plus on the control window's own globe, which is where the operator is reading the rotation they are turning. There is no "Calibration submenu"; it is one toggle sitting directly above the rotation control it is used with. The pattern is the one operator choice in the panel that deliberately does **not** persist. | Yes (additive) |
 | 15 | `multi-output: operator runbook` | **Landed** — [`docs/MULTI_MONITOR_OPERATIONS.md`](MULTI_MONITOR_OPERATIONS.md), the deployment half this plan had deferred, and which a spike showed is not optional. It covers everything below and four things the ladder could not have predicted, all of them from hardware and all of them **silent** failures: the **gpu** field being unreadable on Linux (so §1.1's check moves outside the app, on the platform SOS installations most often run), the output monitor's **refresh rate** as a hard ceiling on its frame rate with a dock as the usual cause, and two Linux package prerequisites — GStreamer codecs, without which no HLS dataset plays, and fonts in two classes, without which every control renders as an empty box. Originally scoped as: Covers: **checking which GPU the webview actually got** (the renderer string surfaced by commit 11's debug overlay) and the per-OS override for a hybrid-graphics machine, since the app's own `powerPreference` is inert and a silent landing on the iGPU is undiagnosable from logs; **measuring this machine's decoder budget** rather than trusting a constant, and entering it in the Outputs panel's budget field (commit 11); disabling screen savers and display sleep (Open Question 5's documented half); the kiosk autostart entry from §3.6; and what each Outputs-panel health badge means in front of an audience. No code. | **Yes** (docs) |
-| 16 | `multi-output: projector-warp mode (sphere-sim warp import)` | **In progress** — the pure module landed 2026-09-29 (`src/output/projectorWarp.ts`: fail-closed parse, geometry build, blend, SOS's quadrant table, the whole-set check, and a parity fixture from sphere-sim's own tracer), and the import with it (`storedZip`, `warpImport`: a store-only ZIP reader that takes only the root's `warp/<id>.data`, since a bundle's restore point keeps the previous calibration under the same name), `projector-warp` as an `OutputMode` through protocol, aggregator, persistence and the spawn URL, and the set on the render-config channel with a key of its own per set (`warpStorage`, deleted only when the operator lets go of it), the scene that draws it — verified against the TypeScript mirror on SwiftShader — the panel's import, layout question, blend gamma and content-rotation label, and the runbook's section on spanning and importing (`MULTI_MONITOR_OPERATIONS.md` §3.6); a hardware pass on a sphere remains. Specified in §"Rung 16 — a sphere-sim warp bundle on one output", which opens roadmap Phase 3's sphere half now that its demand gate is met. One output on the spanned display carries a sphere-sim bundle's Bourke meshes, each placed in its viewport of the one framebuffer and drawn in one pass, so the projectors share one decoder and one swap and cannot drift apart at the seams. A new `projector-warp` mode rather than a flag, so a build without this rung refuses to spawn one instead of throwing an unwarped equirect across calibrated projectors. The ray-march runs per fragment — no render target, no second resample — at a unit direction the mesh interpolates in place of `(u, v)`, which takes the texture seam and the poles without a special case and, measured against sphere-sim's own tracer, matches `(u, v)` interpolation wherever that works. Three conventions that fail silently were measured against sphere-sim's own export and are specified there: the seam and the poles, a linear-light blend weight arriving at a display-space renderer, and a sphere rig's rotation already baked into the mesh, which is why rung 14a's offset becomes a content rotation under a warp and is never seeded from the rig. Not SOS-specific: any rig sphere-sim calibrates arrives in the same shape, on the sphere or on any surface unwrapped equirectangularly — a dome, an ellipsoid; only a model whose UV set is an atlas is out. A mesh is never placed by its projector id alone, because sphere-sim's placed rigs reuse SOS's ids in other places: the layout comes from the bundle, or from the operator explicitly choosing SOS's quadrants, or the import refuses. So an SOS rig was unblocked upstream from the start, and any other rig needed [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49) (the layout in the bundle). sphere-sim#52 answered it on 2026-09-29, and this build reads its `layout.json` — so a placed rig imports by its own layout once sphere-sim's page exports one. [zyra-project/sphere-sim#50](https://github.com/zyra-project/sphere-sim/issues/50) (the blend convention stated in `warp.ts`) is still open and makes every rig safer. | Yes (additive) |
+| 16 | `multi-output: projector-warp mode (sphere-sim warp import)` | **In progress** — the pure module landed 2026-09-29 (`src/output/projectorWarp.ts`: fail-closed parse, geometry build, blend, SOS's quadrant table, the whole-set check, and a parity fixture from sphere-sim's own tracer), and the import with it (`storedZip`, `warpImport`: a store-only ZIP reader that takes only the root's `warp/<id>.data`, since a bundle's restore point keeps the previous calibration under the same name), `projector-warp` as an `OutputMode` through protocol, aggregator, persistence and the spawn URL, and the set on the render-config channel with a key of its own per set (`warpStorage`, deleted only when the operator lets go of it), the scene that draws it — verified against the TypeScript mirror on SwiftShader — the panel's import, layout question, blend gamma and content-rotation label, and the runbook's section on spanning and importing (`MULTI_MONITOR_OPERATIONS.md` §3.6); a hardware pass on a sphere remains. Specified in §"Rung 16 — a sphere-sim warp bundle on one output", which opens roadmap Phase 3's sphere half now that its demand gate is met. One output on the spanned display carries a sphere-sim bundle's Bourke meshes, each placed in its viewport of the one framebuffer and drawn in one pass, so the projectors share one decoder and one swap and cannot drift apart at the seams. A new `projector-warp` mode rather than a flag, so a build without this rung refuses to spawn one instead of throwing an unwarped equirect across calibrated projectors. The ray-march runs per fragment — no render target, no second resample — at a unit direction the mesh interpolates in place of `(u, v)`, which takes the texture seam and the poles without a special case and, measured against sphere-sim's own tracer, matches `(u, v)` interpolation wherever that works. Three conventions that fail silently were measured against sphere-sim's own export and are specified there: the seam and the poles, a linear-light blend weight arriving at a display-space renderer, and a sphere rig's rotation already baked into the mesh, which is why rung 14a's offset becomes a content rotation under a warp and is never seeded from the rig. Not SOS-specific: any rig sphere-sim calibrates arrives in the same shape, on the sphere or on any surface unwrapped equirectangularly — a dome, an ellipsoid; only a model whose UV set is an atlas is out, and so is a mesh addressing a fisheye frame, which no file can tell from an equirect one: refused where a layout declares it, asked about where nothing does (§"Which surfaces", corrected 2026-10-02, which also records that a dome's audience, sitting inside it, sees the picture mirrored). A mesh is never placed by its projector id alone, because sphere-sim's placed rigs reuse SOS's ids in other places: the layout comes from the bundle, or from the operator explicitly choosing SOS's quadrants, or the import refuses. So an SOS rig was unblocked upstream from the start, and any other rig needed [zyra-project/sphere-sim#49](https://github.com/zyra-project/sphere-sim/issues/49) (the layout in the bundle). sphere-sim#52 answered it on 2026-09-29, and this build reads its `layout.json` — so a placed rig imports by its own layout once sphere-sim's page exports one. [zyra-project/sphere-sim#50](https://github.com/zyra-project/sphere-sim/issues/50) (the blend convention stated in `warp.ts`) is still open and makes every rig safer. | Yes (additive) |
 
 **Backout plan.** Reverting commit 9 leaves all the plumbing in
 place (manager, output bundle, capability) but removes the
@@ -3704,14 +3704,66 @@ case convention 1 handles. A model whose UV set is an atlas of islands
 arrives as a warp into that atlas, which only content authored for it
 can fill, and stays out.
 
-The file cannot say which it is: both are numbers in [0, 1]. The
-failure is at least a loud one — Earth in fragments across the model,
-not a plausible globe slightly off — which is why this rung notes the
-limit rather than guarding it. Two of sphere-sim's behaviours are
-sphere-only, both keyed on `blendModelApplies`: it masks the polar
-caps into `i`, which changes nothing here since `i` is applied as it
-arrives, and it bakes the rig's rotation into `u`, which changes
-convention 3.
+The file cannot say which it is: both are numbers in [0, 1].
+~~The failure is at least a loud one — Earth in fragments across the
+model, not a plausible globe slightly off — which is why this rung
+notes the limit rather than guarding it.~~ **Corrected 2026-10-02:
+that holds for an atlas, not for a fisheye layout.**
+
+- **Why an atlas is loud.** Its islands sit apart in the texture, so a
+  cell straddling two of them has corners that are neighbours on the
+  model and strangers in the texture. Convention 1's width bound drops
+  that cell.
+- **A fisheye layout has no islands, and is the quiet case.** Bourke's
+  format says only that `(u, v)` refer to the original input image. The
+  leading `2` is the mesh's topology (rectangular, against polar), not a
+  projection. So a mesh made for a dome or a mirror addresses a
+  **fisheye** frame and arrives in exactly the same shape. That includes
+  meshmapper's, the commonest Bourke meshes there are.
+- **Read as equirect, the disc becomes the whole world.** Its centre
+  lands at (0°, 0°), and its rim at the poles and the antimeridian.
+  Neighbouring texels are still neighbouring directions all the way
+  round, so no triangle stands out as wide and the bound drops
+  nothing.
+- **Measured.** A synthetic one, 16:9 at 41×23, an angular fisheye of a
+  180° hemisphere, parses and places, loose under SOS's quadrants and
+  in a bundle alike (`warpImport.test.ts`). It builds 1,780 triangles,
+  and the width bound drops none of them. The result is a smooth,
+  plausible globe that is wrong.
+
+So the quiet case is guarded, by the only thing that can know, a
+declaration:
+
+- **In a bundle.** A `layout.json` that states what `(u, v)` address
+  must say `equirectangular`, and is refused for anything else. sphere-sim
+  writes no such field yet (see "Upstream requests"). One that states
+  nothing reads as before. That leaves one route open: a sphere-sim
+  bundle for a model whose own UV set is a fisheye, as a domemaster
+  dome's is. It stays open until sphere-sim states the frame.
+- **For anything without a layout,** the operator's answer to the
+  question states the frame as well as the place.
+
+**"Nothing the sphere does not need" holds for the mesh maths, not for
+where the audience sits** (corrected 2026-10-02). A sphere's audience
+stands outside it and a dome's sits inside, and a picture seen from the
+other side is its mirror image. Content authored like a globe has east
+to the right of north when seen from outside. From inside, east is to
+the left, so on a dome the coastlines read mirror-reversed east to
+west, and so does anything burnt into the picture, a title or a date
+stamp. The warp is right either way, since it says where each projector
+pixel lands. Which way the picture should read depends on where the
+audience is, and the mesh does not record that. This rung does not
+handle it. Under convention 3's rule that rotation is content, a
+viewing-side flip would be a terraviz **content** setting beside the
+content rotation, never a property of the mesh. Phase 2's dome, whose
+camera sits at the centre, inherits the same question.
+
+Two of sphere-sim's behaviours are sphere-only, both keyed on
+`blendModelApplies`:
+
+- it masks the polar caps into `i`, which changes nothing here, since
+  `i` is applied as it arrives;
+- it bakes the rig's rotation into `u`, which changes convention 3.
 
 #### One output carrying the set, not one output per mesh
 
@@ -4099,8 +4151,10 @@ itself as a parsing mistake.
    nothing reaches that. On a mesh surface it catches a cell straddling
    two UV islands, whose corners are neighbours on the model and
    strangers in the texture, though not a cut whose two sides happen to
-   sit close in the texture. Each drop is counted on the HUD, so a rig
-   that trips the bound shows a number rather than a hole.
+   sit close in the texture. It does not catch a fisheye layout at all,
+   since that has no cut (§"Which surfaces"). Each drop is counted on
+   the HUD, so a rig that trips the bound shows a number rather than a
+   hole.
 
    **The fetch has a seam of its own**, and interpolation does not
    reach it. The shader takes the hit point's longitude with `atan`,
@@ -4420,12 +4474,18 @@ same error adds 3% to its light. Judge an edge on the sphere.
 MPCDI, which stays additive for later. A model whose UV set is an atlas
 rather than an equirectangular unwrap: its warp addresses that atlas,
 which only content authored for it can fill — a different job, as
-§"Which surfaces" records. Surfaces are not otherwise a non-goal: a
-dome or an ellipsoid unwrapped equirectangularly is in scope and needs
-nothing the sphere does not. Per-projector colour and black-level
-matching. Authoring or editing a warp in terraviz, which is
-sphere-sim's job. Placing one window across several monitors. SOS's
-nine-point alignment files.
+§"Which surfaces" records. **Meshes whose `(u, v)` address a fisheye
+frame**, the output of dome and mirror tools, meshmapper's among them,
+are a non-goal **until a layout can declare the frame**. Today a
+fisheye mesh is indistinguishable from an equirect one. When a layout
+does declare one, it is refused rather than decoded. Surfaces are not
+otherwise a non-goal: a dome or an ellipsoid unwrapped
+equirectangularly is in scope and needs nothing the sphere does not *in
+the mesh maths*. A dome's audience sits inside, which mirrors the
+picture, and that is unhandled (§"Which surfaces"). Per-projector
+colour and black-level matching. Authoring or editing a warp in
+terraviz, which is sphere-sim's job. Placing one window across several
+monitors. SOS's nine-point alignment files.
 
 #### Verification, and what cannot be verified here
 
@@ -4506,6 +4566,14 @@ rotation in it. Its bundles carry a root `layout.json`,
 - **The texture rides the set.** It is stored with it and shown in the
   row as the warp's rotation. It is not part of the content id, since it
   changes no pixel, so one set placed either way is one set.
+- **What `(u, v)` address, where the layout says so** (`uv`, added
+  2026-10-02): `equirectangular`, or the import is refused.
+  - sphere-sim writes no such field yet. A request drafted the same day
+    asks for it under this name, `equirectangular` for the analytic
+    sphere and the model's own UV set for a `.glb`.
+  - This build reads it ahead of its writer. It is the one field inside
+    `@1` not ignored when unknown, because ignoring it is the misreading.
+  - A layout without it reads as before (§"Which surfaces").
 - **Fixtures.** They are regenerated at `cc44237` and cover three
   bundles: the SOS one with its layout, the same without, and a placed
   pair, which sphere-sim lays out as halves at full height. The meshes
@@ -4569,6 +4637,15 @@ emits Bourke warp-and-blend files whose `u,v` are equirect coordinates.
 That path skips the fisheye maths, the calibration and the blending
 together, and is what the effort estimate below should be weighed
 against.
+
+**A dome's audience sits inside, and this phase inherits what that
+does to the picture** (2026-10-02). A camera at the sphere's centre
+renders each direction's texel as seen from inside. Content authored
+like a globe therefore reads mirror-reversed east to west on the dome,
+coastlines and any burnt-in text alike. Rung 16's warp has the same
+property for the same reason (§"Which surfaces"). Fixing it is a
+content setting, a viewing-side flip beside the content rotation, and
+one setting should serve both.
 
 The off-center camera plumbing (§3.5) already exists from v1
 — the LED sphere uses it as its primary mode — so the dome
