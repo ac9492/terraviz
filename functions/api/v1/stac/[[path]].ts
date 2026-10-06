@@ -15,3 +15,7 @@ export const onRequestGet: PagesFunction<CatalogEnv> = async context => {
 export const onRequestHead = onRequestGet
 
 export const onRequestPost = onRequestGet
+
+export const onRequestOptions = onRequestGet
+
+export const onRequest = onRequestGet

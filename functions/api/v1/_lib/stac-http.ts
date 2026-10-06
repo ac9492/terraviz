@@ -9,27 +9,69 @@ import { matchesStacQuery, parseStacQuery } from './stac-query'
 import { STAC_API_CONFORMANCE, STAC_OPENAPI_MEDIA, stacOpenApi, stacServiceHtml, stacServiceLinks } from './stac-service'
 import { searchStacItems, stacPostParameters } from './stac-search'
 
+const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Expose-Headers': 'ETag, Link' }
+const queryErrorCodes = new Set(['invalid_query', 'invalid_limit', 'invalid_cursor', 'invalid_bbox', 'invalid_datetime',
+  'invalid_ids', 'invalid_collections', 'invalid_intersects', 'bbox_intersects_conflict', 'unsupported_media_type', 'query_too_large'])
+const errorDescriptions: Record<string, string> = {
+  not_found: 'The requested resource is not available.',
+  binding_missing: 'The catalog service is not configured.',
+  stac_unavailable: 'The verified publication is temporarily unavailable.',
+  method_not_allowed: 'This resource does not support the requested method.',
+  not_acceptable: 'The requested response format is not available.',
+  invalid_query: 'The request contains invalid query parameters or JSON.',
+  invalid_limit: 'Limit must be a positive safe integer.',
+  invalid_cursor: 'Use an opaque cursor supplied by a next link.',
+  invalid_bbox: 'Bbox must contain four or six decimal WGS84 coordinates.',
+  invalid_datetime: 'Datetime must be a valid RFC3339 instant or ordered interval.',
+  invalid_ids: 'Ids must contain at most 100 valid identifiers of at most 256 characters.',
+  invalid_collections: 'Collections must contain at most 100 valid identifiers of at most 256 characters.',
+  invalid_intersects: 'Intersects must be a valid bounded GeoJSON geometry with closed polygon rings.',
+  bbox_intersects_conflict: 'Bbox and intersects cannot be used together.',
+  unsupported_media_type: 'POST search requires application/json.',
+  query_too_large: 'The POST body exceeds the allowed size.',
+  intersects_budget_exceeded: 'Narrow ids, collections or datetime to reduce exact intersection work.',
+}
+
+function queryErrorCode(error: unknown): string {
+  return error instanceof Error && queryErrorCodes.has(error.message) ? error.message : 'invalid_query'
+}
+
 export function stacError(status: number, error: string): Response {
-  return new Response(JSON.stringify({ error }), { status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } })
+  return new Response(JSON.stringify({ error, code: error, description: errorDescriptions[error] ?? 'The request could not be completed.' }), { status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } })
 }
 
 export async function serveStac(request: Request, env: CatalogEnv): Promise<Response> {
+  const response = await serveStacResponse(request, env)
+  for (const [key, value] of Object.entries(corsHeaders)) response.headers.set(key, value)
+  return response
+}
+
+async function serveStacResponse(request: Request, env: CatalogEnv): Promise<Response> {
   if (env.STAC_ENABLED !== 'true') return stacError(404, 'not_found')
   if (!env.CATALOG_DB) return stacError(503, 'binding_missing')
   const url = new URL(request.url)
   const path = url.pathname.replace(/\/$/, '').replace(/^\/api\/v1\/stac\/?/, '').split('/').filter(Boolean)
   const search = path.join('/') === 'search'
-  if (!['GET', 'HEAD'].includes(request.method) && !(search && request.method === 'POST')) return new Response(null, { status: 405, headers: { Allow: search ? 'GET, HEAD, POST' : 'GET, HEAD' } })
+  const allow = search ? 'GET, HEAD, POST, OPTIONS' : 'GET, HEAD, OPTIONS'
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: {
+    Allow: allow, 'Access-Control-Allow-Methods': allow, 'Access-Control-Allow-Headers': 'Content-Type, If-None-Match',
+    'Cache-Control': 'no-store',
+  } })
+  if (!['GET', 'HEAD'].includes(request.method) && !(search && request.method === 'POST')) {
+    const response = stacError(405, 'method_not_allowed')
+    response.headers.set('Allow', allow)
+    return response
+  }
   if (request.method === 'POST') {
     if (url.search) return stacError(400, 'invalid_query')
     try { url.search = (await stacPostParameters(request)).toString() }
-    catch (error) { const reason = (error as Error).message; return stacError(reason === 'unsupported_media_type' ? 415 : reason === 'query_too_large' ? 413 : 400, reason) }
+    catch (error) { const reason = queryErrorCode(error); return stacError(reason === 'unsupported_media_type' ? 415 : reason === 'query_too_large' ? 413 : 400, reason) }
   }
   const listing = search || path.join('/') === 'collections' || path.join('/') === 'items' || (path.length === 3 && path[0] === 'collections' && path[2] === 'items')
   if ([...url.searchParams.keys()].some(key => !listing || (path.length === 1 && path[0] === 'collections' && !['limit', 'cursor'].includes(key)))) return stacError(400, 'invalid_query')
   let query
-  try { query = parseStacQuery(url.searchParams, search) } catch (error) { return stacError(400, (error as Error).message) }
+  try { query = parseStacQuery(url.searchParams, search) } catch (error) { return stacError(400, queryErrorCode(error)) }
   const limit = query.limit
   const publication = await readStacPublication(env)
   const root = publication.catalog.links.find(link => link.rel === 'self')!.href
@@ -46,10 +88,16 @@ export async function serveStac(request: Request, env: CatalogEnv): Promise<Resp
   else if (listing) {
     const collection = path.length === 3 ? collections.find(entry => entry.id === path[1]) : null
     if (path.length === 3 && !collection) return stacError(404, 'not_found')
-    const entries = search ? await searchStacItems(env.CATALOG_DB, items, query) : path[0] === 'collections' && path.length === 1 ? collections : items.filter(item => (!collection || item.collection === collection.id) && matchesStacQuery(item, query))
+    let entries
+    try { entries = search ? await searchStacItems(items, query) : path[0] === 'collections' && path.length === 1 ? collections : items.filter(item => (!collection || item.collection === collection.id) && matchesStacQuery(item, query)) }
+    catch (error) {
+      if (!(error instanceof Error) || !['intersects_budget_exceeded', 'invalid_intersects'].includes(error.message)) throw error
+      return stacError(400, error.message)
+    }
     const cursor = url.searchParams.get('cursor')
-    const offset = cursor ? entries.findIndex(entry => entry.id === cursor) + 1 : 0
-    if (cursor && offset === 0) return stacError(400, 'invalid_cursor')
+    const nextIndex = cursor && search ? entries.findIndex(entry => entry.id.localeCompare(cursor) > 0) : -1
+    const offset = cursor ? search ? nextIndex < 0 ? entries.length : nextIndex : entries.findIndex(entry => entry.id === cursor) + 1 : 0
+    if (cursor && !search && offset === 0) return stacError(400, 'invalid_cursor')
     const page = entries.slice(offset, offset + limit)
     const self = new URL(canonical + url.search)
     if (cursor) self.searchParams.set('cursor', cursor)
@@ -81,16 +129,19 @@ export async function serveStac(request: Request, env: CatalogEnv): Promise<Resp
   if (!document) return stacError(404, 'not_found')
   if (geojson && !listing && path.length === 4) {
     const item = document as typeof items[number]
-    document = { ...item, links: item.links.map(link => link.rel === 'self' ? { ...link, href: canonical } : link) }
+    document = { ...item, links: [...item.links.map(link => link.rel === 'self' ? { ...link, href: canonical } : link),
+      { rel: 'canonical', href: item.links.find(link => link.rel === 'self')!.href, type: 'application/geo+json' }] }
   }
   if (geojson) media = 'application/geo+json'
   const body = media === 'text/html' ? document as string : JSON.stringify(document)
   const etag = await computeEtag(body)
   const headers = { 'Content-Type': `${media}; charset=utf-8`, Vary: 'Accept',
-    ETag: etag, 'Cache-Control': 'public, no-cache, must-revalidate',
+    ETag: etag, 'Cache-Control': request.method === 'POST' ? 'no-store' : 'public, no-cache, must-revalidate',
     Link: `<${root}>; rel="root"; type="application/json"` }
-  const matches = request.headers.get('if-none-match')?.split(',').some(value => value.trim() === '*' || value.trim().replace(/^W\//, '') === etag)
+  const matches = ['GET', 'HEAD'].includes(request.method) && request.headers.get('if-none-match')?.split(',').some(value => value.trim() === '*' || value.trim().replace(/^W\//, '') === etag)
   const accept = request.headers.get('accept')
-  if (accept && !accept.split(',').some(value => ['*/*', media.split('/')[0] + '/*', media.split(';')[0]].includes(value.split(';')[0].trim()) && !/;\s*q=0(?:\.0*)?(?:;|$)/.test(value))) return stacError(406, 'not_acceptable')
+  const mediaType = media.split(';')[0]
+  const acceptedTypes = ['*/*', media.split('/')[0] + '/*', mediaType, ...(mediaType.endsWith('+json') ? ['application/json'] : [])]
+  if (accept && !accept.split(',').some(value => acceptedTypes.includes(value.split(';')[0].trim().toLowerCase()) && !/;\s*q=0(?:\.0*)?(?:;|$)/.test(value))) return stacError(406, 'not_acceptable')
   return new Response(matches || request.method === 'HEAD' ? null : body, { status: matches ? 304 : 200, headers })
 }

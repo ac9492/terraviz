@@ -47,7 +47,7 @@ describe('STAC public routes', () => {
         expect((await response.json() as StacCatalog).links.filter(link => link.rel === 'child')).toHaveLength(40)
       } else {
         expect(response.headers.get('cache-control')).toBe('no-store')
-        expect(await response.json()).toEqual({ error: 'stac_unavailable' })
+        expect(await response.json()).toMatchObject({ error: 'stac_unavailable', code: 'stac_unavailable', description: expect.any(String) })
         expect(env.CATALOG_KV.put).not.toHaveBeenCalled()
       }
     } finally { sqlite.close() }
@@ -219,7 +219,8 @@ describe('STAC public routes', () => {
       const product = publication.products[0]
       const alias = `https://node.example/api/v1/stac/collections/${product.collection!.id}/items/${product.item!.id}`
       expect(await (await onRequestGet(makeCtx({ env, url: alias }) as never)).json()).toEqual({ ...product.item,
-        links: product.item!.links.map(link => link.rel === 'self' ? { ...link, href: alias } : link) })
+        links: [...product.item!.links.map(link => link.rel === 'self' ? { ...link, href: alias } : link),
+          { rel: 'canonical', href: product.item!.links.find(link => link.rel === 'self')!.href, type: 'application/geo+json' }] })
     } finally { sqlite.close() }
   })
 
@@ -372,7 +373,7 @@ describe('STAC public routes', () => {
       const response = await onRequestGet(makeCtx({ env, url: 'https://node.example/api/v1/stac' }) as never)
       expect(response.status).toBe(503)
       expect(response.headers.get('cache-control')).toBe('no-store')
-      expect(await response.json()).toEqual({ error: 'stac_unavailable' })
+      expect(await response.json()).toMatchObject({ error: 'stac_unavailable', code: 'stac_unavailable', description: expect.any(String) })
       expect(log).toHaveBeenCalledWith('[stac] publication failed', 'Invalid STAC catalog: node_identity_invalid')
       expect(env.CATALOG_KV.put).not.toHaveBeenCalled()
     } finally { log.mockRestore(); sqlite.close() }
@@ -525,6 +526,6 @@ describe('STAC public routes', () => {
     const response = await onRequestGet({ env: {}, request: new Request('https://node.example/api/v1/stac') } as never)
     expect(response.status).toBe(404)
     expect(response.headers.get('cache-control')).toBe('no-store')
-    expect(await response.json()).toEqual({ error: 'not_found' })
+    expect(await response.json()).toMatchObject({ error: 'not_found', code: 'not_found', description: expect.any(String) })
   })
 })

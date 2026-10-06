@@ -2,22 +2,49 @@
 // Copyright 2026 The Zyra Project
 
 import type { StacItem } from './stac-types'
-import type { Geometry } from 'geojson'
+import type { Geometry, Position } from 'geojson'
 import Ajv from 'ajv'
 import booleanIntersects from '@turf/boolean-intersects'
 import turfBbox from '@turf/bbox'
 import geometrySchema from '../../../../docs/metadata/schemas/official/geojson.org-schema-Geometry-f67b736b0d3c.json'
 
 const validateGeometry = new Ajv({ strict: false }).compile<Geometry>(geometrySchema)
+export const MAX_INTERSECTS_POSITIONS = 256
+export const MAX_INTERSECTS_MEMBERS = 32
+export const MAX_INTERSECTS_POSITION_TESTS = 16384
 
-function validGeometry(value: unknown, depth = 0): boolean {
+function countPositions(value: unknown, budget: { positions: number }, depth = 0): boolean {
+  if (depth > 4 || !Array.isArray(value) || !value.length) return false
+  if (typeof value[0] === 'number') return ++budget.positions <= MAX_INTERSECTS_POSITIONS
+  return value.every(child => countPositions(child, budget, depth + 1))
+}
+
+function closedRing(ring: Position[]): boolean {
+  const first = ring[0], last = ring.at(-1)
+  return ring.length >= 4 && first.length === last?.length && first.every((coordinate, index) => coordinate === last[index])
+}
+
+function validGeometry(value: unknown, budget = { positions: 0, members: 0 }, depth = 0): boolean {
   if (depth > 8 || !value || typeof value !== 'object') return false
   const geometry = value as Record<string, unknown>
+  delete geometry.bbox
   if (geometry.type === 'GeometryCollection') return Array.isArray(geometry.geometries)
-    && geometry.geometries.length > 0 && geometry.geometries.every(child => validGeometry(child, depth + 1))
-  if (!validateGeometry(value)) return false
-  const bounds = turfBbox(value as Geometry)
-  return bounds.every(Number.isFinite) && bounds[0] >= -180 && bounds[2] <= 180 && bounds[1] >= -90 && bounds[3] <= 90
+    && geometry.geometries.length > 0 && geometry.geometries.every(child => ++budget.members <= MAX_INTERSECTS_MEMBERS && validGeometry(child, budget, depth + 1))
+  if (!countPositions(geometry.coordinates, budget) || !validateGeometry(value)) return false
+  const validated = value as Geometry
+  if (validated.type === 'Polygon') return validated.coordinates.every(closedRing)
+  if (validated.type === 'MultiPolygon') return validated.coordinates.every(polygon => polygon.length > 0 && polygon.every(closedRing))
+  return true
+}
+
+function boxesOverlap(first: number[], second: number[]): boolean {
+  const [west, south, east, north] = first
+  const [left, bottom, right, top] = second
+  if (south > top || north < bottom) return false
+  if (west > east && left > right) return true
+  if (west > east) return west <= right || east >= left
+  if (left > right) return left <= east || right >= west
+  return west <= right && east >= left
 }
 
 export interface StacQuery {
@@ -28,6 +55,8 @@ export interface StacQuery {
   ids?: string[]
   collections?: string[]
   intersects?: Geometry
+  intersectsBbox?: number[]
+  intersectsPositions?: number
 }
 
 export function parseStacQuery(params: URLSearchParams, search = false): StacQuery {
@@ -49,13 +78,18 @@ export function parseStacQuery(params: URLSearchParams, search = false): StacQue
     if (text.length > 65536) throw new Error('invalid_intersects')
     let geometry: unknown
     try { geometry = JSON.parse(text) } catch { throw new Error('invalid_intersects') }
-    if (!validGeometry(geometry)) throw new Error('invalid_intersects')
+    const budget = { positions: 0, members: 0 }
+    if (!validGeometry(geometry, budget)) throw new Error('invalid_intersects')
+    const bounds = turfBbox(geometry as Geometry, { recompute: true })
+    if (!bounds.every(Number.isFinite) || bounds[0] < -180 || bounds[2] > 180 || bounds[1] < -90 || bounds[3] > 90) throw new Error('invalid_intersects')
     query.intersects = geometry as Geometry
+    query.intersectsBbox = bounds
+    query.intersectsPositions = budget.positions
   }
   if (params.has('cursor')) query.cursor = params.get('cursor')!
   if (params.has('bbox')) {
     const parts = params.get('bbox')!.split(',')
-    if (parts.some(value => !value.trim())) throw new Error('invalid_bbox')
+    if (parts.some(value => !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim()))) throw new Error('invalid_bbox')
     const bbox = parts.map(Number)
     const dimensions = bbox.length / 2
     if (![4, 6].includes(bbox.length) || bbox.some(value => !Number.isFinite(value))
@@ -70,7 +104,7 @@ export function parseStacQuery(params: URLSearchParams, search = false): StacQue
     if (parts.length > 2) throw new Error('invalid_datetime')
     const instant = (value: string, open: number): number => {
       if (parts.length === 2 && (value === '..' || value === '')) return open
-      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) throw new Error('invalid_datetime')
+      if (!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) throw new Error('invalid_datetime')
       const parsed = Date.parse(value)
       if (!Number.isFinite(parsed)) throw new Error('invalid_datetime')
       const [year, month, day] = value.slice(0, 10).split('-').map(Number)
@@ -83,10 +117,9 @@ export function parseStacQuery(params: URLSearchParams, search = false): StacQue
   return query
 }
 
-export function matchesStacQuery(item: StacItem, query: StacQuery): boolean {
+export function matchesStacQuery(item: StacItem, query: StacQuery, budget?: { remaining: number }): boolean {
   if (query.ids && !query.ids.includes(item.id)) return false
   if (query.collections && (!item.collection || !query.collections.includes(item.collection))) return false
-  if (query.intersects && (!item.geometry || !booleanIntersects(item.geometry, query.intersects))) return false
   if (query.interval) {
     const start = Date.parse(item.properties.datetime ?? item.properties.start_datetime!)
     const end = Date.parse(item.properties.datetime ?? item.properties.end_datetime!)
@@ -96,11 +129,16 @@ export function matchesStacQuery(item: StacItem, query: StacQuery): boolean {
     if (!item.bbox) return false
     const dimensions = query.bbox.length / 2
     if (dimensions === 3 && (query.bbox[2] > 0 || query.bbox[5] < 0)) return false
-    const [west, south, east, north] = item.bbox
-    if (south > query.bbox[dimensions + 1] || north < query.bbox[1]) return false
-    const segments = (left: number, right: number): number[][] => left <= right ? [[left, right]] : [[left, 180], [-180, right]]
-    if (!segments(west, east).some(first => segments(query.bbox![0], query.bbox![dimensions])
-      .some(second => first[0] <= second[1] && first[1] >= second[0]))) return false
+    if (!boxesOverlap(item.bbox, [query.bbox[0], query.bbox[1], query.bbox[dimensions], query.bbox[dimensions + 1]])) return false
+  }
+  if (query.intersects) {
+    if (!item.geometry || !item.bbox || !boxesOverlap(item.bbox, query.intersectsBbox ?? turfBbox(query.intersects))) return false
+    if (budget) {
+      budget.remaining -= query.intersectsPositions ?? MAX_INTERSECTS_POSITIONS
+      if (budget.remaining < 0) throw new Error('intersects_budget_exceeded')
+    }
+    try { if (!booleanIntersects(item.geometry, query.intersects)) return false }
+    catch { throw new Error('invalid_intersects') }
   }
   return true
 }

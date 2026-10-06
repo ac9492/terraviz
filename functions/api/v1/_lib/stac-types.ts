@@ -19,7 +19,6 @@ export interface StacLink {
   title?: string
   method?: 'GET' | 'POST'
   body?: Record<string, unknown>
-  merge?: boolean
 }
 export interface StacAsset extends StacExtensionFields {
   href: string

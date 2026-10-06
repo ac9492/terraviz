@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Zyra Project
 
-import { createServer } from 'node:http'
+import { createServer, request } from 'node:http'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { readFileSync } from 'node:fs'
@@ -38,7 +38,11 @@ it.skipIf(process.env.STAC_EXTERNAL !== 'true')('passes the pinned official STAC
       response.headers.forEach((value, key) => { headers[key] = value })
       outgoing.writeHead(response.status, headers)
       outgoing.end(Buffer.from(await response.arrayBuffer()))
-    } catch (error) { outgoing.writeHead(500); outgoing.end(String(error)) }
+    } catch (error) {
+      console.error('STAC validator fixture request failed', error)
+      outgoing.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+      outgoing.end('Internal Server Error')
+    }
   })
   try {
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -47,7 +51,27 @@ it.skipIf(process.env.STAC_EXTERNAL !== 'true')('passes the pinned official STAC
     sqlite.prepare("UPDATE datasets SET slug='validator-sequence',frame_count=120,frame_extension='png',frame_source_filenames_ref='r2:manifest.json',period='P1D',format='video/mp4',end_time='2026-05-01T00:00:00Z' WHERE id=?").run(ids[0])
     env.R2_PUBLIC_BASE = 'https://data.example'
     expect(await publishDataset(env, ids[0])).toMatchObject({ ok: true })
-    const args = ['tool', 'run', '--from', 'stac-api-validator==0.6.8', 'stac-api-validator', '--root-url', `${origin}/api/v1/stac`,
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const response = await new Promise<{ status: number | undefined; body: string; contentType: string | undefined }>((resolve, reject) => {
+        const outgoing = request(`${origin}/api/v1/stac`, { method: 'TRACE' }, incoming => {
+          const chunks: Buffer[] = []
+          incoming.on('data', chunk => chunks.push(Buffer.from(chunk)))
+          incoming.on('error', reject)
+          incoming.on('end', () => resolve({ status: incoming.statusCode, body: Buffer.concat(chunks).toString(), contentType: incoming.headers['content-type'] }))
+        })
+        outgoing.on('error', reject)
+        outgoing.end()
+      })
+      expect(response).toEqual({ status: 500, body: 'Internal Server Error', contentType: 'text/plain; charset=utf-8' })
+      expect(diagnostic).toHaveBeenCalledWith('STAC validator fixture request failed', expect.any(Error))
+    } finally { diagnostic.mockRestore() }
+    const openapi = await promisify(execFile)('uv', ['run', '--python', '3.11', '--exclude-newer', '2026-10-02T00:00:00Z', '--with', 'openapi-spec-validator==0.7.1',
+      'python', '-c', 'import json, sys, urllib.request; from openapi_spec_validator import validate_spec; validate_spec(json.load(urllib.request.urlopen(sys.argv[1]))); print("OpenAPI valid")', `${origin}/api/v1/stac/api`], {
+      timeout: 120000, env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+    }).catch((error: { stdout: string; stderr: string }) => { throw new Error(error.stdout + '\n' + error.stderr) })
+    expect(openapi.stdout).toContain('OpenAPI valid')
+    const args = ['tool', 'run', '--exclude-newer', '2026-10-02T00:00:00Z', '--from', 'stac-api-validator==0.6.8', 'stac-api-validator', '--root-url', `${origin}/api/v1/stac`,
       '--conformance', 'core', '--conformance', 'collections', '--conformance', 'features', '--conformance', 'item-search',
       '--collection', `NODE000-${ids[0]}`, '--geometry', JSON.stringify({ type: 'Polygon', coordinates: [[[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]]] }), '--validate-pagination']
     const result = await promisify(execFile)('uv', args, { timeout: 240000, maxBuffer: 8 * 1024 * 1024,

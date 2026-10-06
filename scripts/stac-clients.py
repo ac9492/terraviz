@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 import geopandas
+import pyogrio
 import requests
 import stac_geoparquet
 from pystac_client import Client
@@ -21,6 +22,12 @@ assert {item.id for item in get_items} == {item.id for item in post_items}
 dated = list(client.search(collections=[collection], datetime="2026-01-02T00:00:00Z").items())
 assert len(dated) == 1
 assert dated[0].datetime.isoformat().startswith("2026-01-02")
+
+oapif = pyogrio.read_dataframe(f"OAPIF:{root}/collections/{collection}", PAGE_SIZE=17)
+assert len(oapif) == 120
+assert set(oapif["id"]) == {item.id for item in get_items}
+assert oapif.geometry.notna().all()
+assert oapif.crs.is_geographic
 
 indexed = []
 url = root + "/search?limit=19&collections=" + collection
@@ -40,4 +47,5 @@ with tempfile.TemporaryDirectory() as directory:
     assert len(restored) == 120
     assert set(restored["id"]) == {item.id for item in get_items}
     assert restored.geometry.notna().all()
-print(json.dumps({"pystac_client": "0.9.0", "stac_geoparquet": stac_geoparquet.__version__, "indexed_items": 120, "get_post_equal": True}))
+print(json.dumps({"pystac_client": "0.9.0", "stac_geoparquet": stac_geoparquet.__version__, "indexed_items": 120, "get_post_equal": True,
+                 "gdal": ".".join(str(part) for part in pyogrio.__gdal_version__), "gdal_features": len(oapif)}))

@@ -5,6 +5,7 @@ on:
     paths:
       - 'functions/api/v1/_lib/stac*'
       - 'functions/api/v1/stac/**'
+      - 'docs/metadata/schemas/**'
       - 'migrations/catalog/**'
       - '.github/workflows/stac-api.yml'
       - 'package*.json'
@@ -13,6 +14,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   conformance:
@@ -25,6 +30,8 @@ jobs:
           node-version: 22
           cache: npm
       - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.29'
       - run: npm ci
       - name: Official STAC API 1.0.0 validator
         env:
@@ -41,10 +48,18 @@ jobs:
           node-version: 22
           cache: npm
       - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.29'
       - run: npm ci
       - name: Prepare pinned STAC Browser
+        env:
+          STAC_BROWSER_COMMIT: c78b78f3434fdd34d4192f7044194dae6a15172d
         run: |
-          git clone --depth 1 --branch v5.1.0 https://github.com/radiantearth/stac-browser.git .wrangler/stac-browser
+          git init .wrangler/stac-browser
+          git -C .wrangler/stac-browser remote add origin https://github.com/radiantearth/stac-browser.git
+          git -C .wrangler/stac-browser fetch --depth 1 origin "$STAC_BROWSER_COMMIT"
+          git -C .wrangler/stac-browser checkout --detach FETCH_HEAD
+          test "$(git -C .wrangler/stac-browser rev-parse HEAD)" = "$STAC_BROWSER_COMMIT"
           npm ci --prefix .wrangler/stac-browser
           SB_historyMode='hash' npm run build --prefix .wrangler/stac-browser
           npx playwright install --with-deps chromium
@@ -63,5 +78,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: stac-browser-client
-          path: .wrangler/stac-browser-item.png
+          path: .wrangler/stac-browser-*.png
           if-no-files-found: warn
+          retention-days: 7

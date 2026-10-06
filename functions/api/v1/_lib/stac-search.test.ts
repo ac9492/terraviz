@@ -5,13 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stacRouteFixture } from './stac-test-helpers'
 import { serveStac } from './stac-http'
 import { publishDataset } from './dataset-mutations'
+import { stampTranscodingForVideoSource } from './asset-uploads'
+import { readStacPublication } from './stac-publication'
+import { MAX_INTERSECTS_POSITIONS, MAX_INTERSECTS_POSITION_TESTS } from './stac-query'
 import type { CatalogEnv } from './env'
 import type { StacItem, StacLink } from './stac-types'
 
 interface Page { features: StacItem[]; links: StacLink[]; numberMatched: number }
 const root = 'https://node.example/api/v1/stac'
 
-describe('indexed STAC Item Search', () => {
+describe('STAC Item Search', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'Content-Type': 'image/png' } }))))
   afterEach(() => vi.unstubAllGlobals())
 
@@ -50,6 +53,24 @@ describe('indexed STAC Item Search', () => {
     } finally { sqlite.close() }
   })
 
+  it.each(['GET', 'POST'])('continues %s pagination after the cursor Item goes private', async method => {
+    const { sqlite, ids, env } = stacRouteFixture(3)
+    try {
+      const request = (cursor?: string) => method === 'GET'
+        ? new Request(`${root}/search?limit=1${cursor ? '&cursor=' + encodeURIComponent(cursor) : ''}`)
+        : new Request(`${root}/search`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 1, ...(cursor ? { cursor } : {}) }) })
+      const first = await (await serveStac(request(), env)).json() as Page
+      expect(first.features[0].id).toBe(ids[0])
+      sqlite.prepare("UPDATE datasets SET visibility='private' WHERE id=?").run(ids[0])
+      const response = await serveStac(request(ids[0]), env)
+      expect(response.status).toBe(200)
+      expect((await response.json() as Page).features.map(item => item.id)).toEqual([ids[1]])
+      const end = await serveStac(request(ids[2]), env)
+      expect(end.status).toBe(200)
+      expect((await end.json() as Page).features).toEqual([])
+    } finally { sqlite.close() }
+  })
+
   it('handles bbox crossings, elevation zero and null geometry', async () => {
     const { sqlite, ids, env } = stacRouteFixture(2)
     try {
@@ -62,15 +83,36 @@ describe('indexed STAC Item Search', () => {
     } finally { sqlite.close() }
   })
 
-  it('indexes individual frame times and never leaks stale or private saved Items', async () => {
+  it.each(['2026-05-31T12:00:00Z', '../9999-12-31T23:00:00-05:00'])('agrees with browse for JS-valid offset and far datetime %s', async datetime => {
+    const { sqlite, ids, env } = stacRouteFixture()
+    try {
+      sqlite.exec("UPDATE datasets SET start_time='2026-06-01T00:00:00+15:00',end_time='2026-06-02T00:00:00+15:00'")
+      const browse = await (await serveStac(new Request(`${root}/collections/NODE000-${ids[0]}/items`), env)).json() as Page
+      expect(browse.features).toHaveLength(1)
+      const search = await (await serveStac(new Request(`${root}/search?datetime=${encodeURIComponent(datetime)}`), env)).json() as Page
+      expect(search.features).toEqual(browse.features)
+    } finally { sqlite.close() }
+  })
+
+  it('filters individual frame times and never leaks stale or private saved Items', async () => {
     const { sqlite, ids, env: base } = stacRouteFixture()
     const env: CatalogEnv = { ...base, STAC_HISTORY_CAPTURE: 'true', R2_PUBLIC_BASE: 'https://data.example',
       CATALOG_R2: { get: async () => ({ text: async () => JSON.stringify([{ index: 0, filename: 'one.png', digest: `sha256:${'a'.repeat(64)}` }, { index: 1, filename: 'two.png', digest: `sha256:${'b'.repeat(64)}` }]) }) } as unknown as R2Bucket }
     try {
       sqlite.exec("UPDATE datasets SET slug='frame-sequence',frame_count=2,frame_extension='png',frame_source_filenames_ref='r2:manifest.json',period='P1D',format='video/mp4'")
+      sqlite.prepare('UPDATE datasets SET source_digest=?').run(`sha256:${'c'.repeat(64)}`)
       expect(await publishDataset(env, ids[0])).toMatchObject({ ok: true })
       const page = async () => await (await serveStac(new Request(`${root}/search?datetime=2026-01-02T00:00:00Z`), env)).json() as Page
       expect((await page()).features.map(item => item.properties.datetime)).toEqual(['2026-01-02T00:00:00.000Z'])
+      const browse = async () => await (await serveStac(new Request(`${root}/collections/NODE000-${ids[0]}/items`), env)).json() as Page
+      const search = async () => await (await serveStac(new Request(`${root}/search?collections=NODE000-${ids[0]}`), env)).json() as Page
+      expect((await browse()).features).toHaveLength(2)
+      const source = sqlite.prepare('SELECT source_digest FROM datasets WHERE id=?').get(ids[0]) as { source_digest: string | null }
+      expect(await stampTranscodingForVideoSource(env.CATALOG_DB!, ids[0], {
+        id: 'retranscode', claimed_digest: source.source_digest,
+      } as Parameters<typeof stampTranscodingForVideoSource>[2], '2026-10-05T00:00:00Z')).toBe(1)
+      expect((await search()).features).toEqual((await browse()).features)
+      expect((await search()).features).toHaveLength(2)
       sqlite.exec("UPDATE datasets SET visibility='private'")
       expect((await page()).features).toEqual([])
       sqlite.exec("UPDATE datasets SET visibility='public',frame_source_filenames_ref='r2:changed.json'")
@@ -82,6 +124,9 @@ describe('indexed STAC Item Search', () => {
     [{ bbox: [0, 0, 1, 1], intersects: { type: 'Point', coordinates: [0, 0] } }, 400],
     [{ ids: 'not-an-array' }, 400], [{ limit: '1' }, 400], [{ ids: ['one,two'] }, 400],
     [{ datetime: '2026-02-30T00:00:00Z' }, 400], [{ intersects: { type: 'Feature' } }, 400],
+    [{ intersects: { type: 'Polygon', coordinates: [[[100, 0], [101, 0], [101, 1], [102, 2]]] } }, 400],
+    [{ intersects: { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1]]] } }, 400],
+    [{ intersects: { type: 'MultiPolygon', coordinates: [[], [[[0, 0], [1, 0], [1, 1], [0, 0]]]] } }, 400],
     [{ unknown: 1 }, 400], [[], 400], [null, 400],
   ])('rejects invalid POST %j', async (body, status) => {
     const { sqlite, env } = stacRouteFixture()
@@ -92,18 +137,74 @@ describe('indexed STAC Item Search', () => {
     } finally { sqlite.close() }
   })
 
-  it('has usable geometry and datetime query indexes', () => {
-    const { sqlite } = stacRouteFixture()
+  it.each([
+    { type: 'Polygon', coordinates: [[[100, 0], [101, 0], [101, 1], [102, 2]]] },
+    { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1]]] },
+    { type: 'MultiPolygon', coordinates: [[], [[[0, 0], [1, 0], [1, 1], [0, 0]]]] },
+    { type: 'MultiLineString', coordinates: [[], [[0, 0], [1, 1]]] },
+    { type: 'GeometryCollection', geometries: [{ type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1]]] }] },
+  ])('rejects malformed GET geometry before publication reads: %j', async geometry => {
+    const { sqlite, env } = stacRouteFixture()
     try {
-      for (const [sql, name] of [
-        ["SELECT id FROM datasets WHERE julianday(start_time)<=julianday('2026-01-01')", 'stac_datasets_datetime'],
-        ['SELECT id FROM datasets WHERE bbox_s<=30', 'stac_datasets_geometry'],
-        ["SELECT id FROM stac_history_items WHERE julianday(start_time)<=julianday('2026-01-01')", 'stac_history_items_datetime'],
-        ["SELECT id FROM stac_history_publications WHERE json_extract(model_json,'$.row.bbox_s')<=30", 'stac_history_geometry'],
-      ]) {
-        const plan = sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]
-        expect(plan.some(row => row.detail.includes(name))).toBe(true)
-      }
+      const response = await serveStac(new Request(`${root}/search?intersects=${encodeURIComponent(JSON.stringify(geometry))}`), env)
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({ error: 'invalid_intersects', code: 'invalid_intersects', description: expect.any(String) })
+      expect(fetch).not.toHaveBeenCalled()
+    } finally { sqlite.close() }
+  })
+
+  it('keeps workflow history in browse, search and the report during a same-source retranscode', async () => {
+    const { sqlite, ids, env: base } = stacRouteFixture()
+    const env: CatalogEnv = { ...base, STAC_HISTORY_CAPTURE: 'true', R2_PUBLIC_BASE: 'https://data.example' }
+    const digest = `sha256:${'c'.repeat(64)}`
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { headers: { 'Content-Type': 'application/vnd.apple.mpegurl' } })))
+    try {
+      sqlite.exec(`INSERT INTO publishers (id,email,display_name,role,status,created_at)
+        VALUES ('PUB','publisher@example.test','Publisher','service','active','2026-01-01');
+        INSERT INTO workflows (id,publisher_id,name,pipeline_json,metadata_template,schedule,target_dataset_id,created_at,updated_at)
+        SELECT 'WF','PUB','Recurring','{}','{}','P1D',id,'2026-01-01','2026-01-01' FROM datasets`)
+      sqlite.prepare("UPDATE datasets SET slug='workflow-output',format='video/mp4',data_ref=?,source_digest=? WHERE id=?")
+        .run(`r2:videos/${ids[0]}/01ARZ3NDEKTSV4RRFFQ69G5FAV/master.m3u8`, digest, ids[0])
+      expect(await publishDataset(env, ids[0])).toMatchObject({ ok: true })
+      const before = await readStacPublication(env)
+      expect(before.products).toHaveLength(1)
+      expect(await stampTranscodingForVideoSource(env.CATALOG_DB!, ids[0], {
+        id: 'retranscode', claimed_digest: digest,
+      } as Parameters<typeof stampTranscodingForVideoSource>[2], '2026-10-05T00:00:00Z')).toBe(1)
+      const browse = await (await serveStac(new Request(`${root}/collections/NODE000-${ids[0]}/items`), env)).json() as Page
+      const search = await (await serveStac(new Request(`${root}/search?collections=NODE000-${ids[0]}`), env)).json() as Page
+      expect(browse.features).toHaveLength(1)
+      expect(search.features).toEqual(browse.features)
+      expect((await readStacPublication(env, { operatorReport: true })).report).toContainEqual(expect.objectContaining({ id: ids[0], included: true, items_included: 1 }))
+    } finally { sqlite.close() }
+  })
+
+  it('returns an explicit uncached CORS error rather than partial over-budget results', async () => {
+    const { sqlite, env } = stacRouteFixture(MAX_INTERSECTS_POSITION_TESTS / MAX_INTERSECTS_POSITIONS + 1)
+    try {
+      const ring = Array.from({ length: MAX_INTERSECTS_POSITIONS - 1 }, (_, index) => {
+        const angle = index * 2 * Math.PI / (MAX_INTERSECTS_POSITIONS - 1)
+        return [Math.cos(angle), Math.sin(angle)]
+      })
+      ring.push(ring[0])
+      const geometry = encodeURIComponent(JSON.stringify({ type: 'Polygon', coordinates: [ring] }))
+      const response = await serveStac(new Request(`${root}/search?intersects=${geometry}`), env)
+      expect(response.status).toBe(400)
+      expect(response.headers.get('cache-control')).toBe('no-store')
+      expect(response.headers.get('access-control-allow-origin')).toBe('*')
+      expect(await response.json()).toMatchObject({ error: 'intersects_budget_exceeded', code: 'intersects_budget_exceeded', description: expect.any(String) })
+    } finally { sqlite.close() }
+  })
+  it('does not expose errors from excessively nested POST JSON', async () => {
+    const { sqlite, env } = stacRouteFixture()
+    try {
+      const body = '{"intersects":' + '['.repeat(20000) + '0' + ']'.repeat(20000) + '}'
+      const response = await serveStac(new Request(`${root}/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }), env)
+      expect(response.status).toBe(400)
+      const error = await response.json() as { error: string; code: string; description: string }
+      expect(error).toMatchObject({ error: 'invalid_query', code: 'invalid_query' })
+      expect(JSON.stringify(error)).not.toMatch(/stack|RangeError|Maximum call/i)
+      expect(fetch).not.toHaveBeenCalled()
     } finally { sqlite.close() }
   })
 })
