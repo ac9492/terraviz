@@ -23,13 +23,13 @@ const errorDescriptions: Record<string, string> = {
   invalid_cursor: 'Use an opaque cursor supplied by a next link.',
   invalid_bbox: 'Bbox must contain four or six decimal WGS84 coordinates.',
   invalid_datetime: 'Datetime must be a valid RFC3339 instant or ordered interval.',
-  invalid_ids: 'Ids must contain at most 100 valid identifiers of at most 256 characters.',
-  invalid_collections: 'Collections must contain at most 100 valid identifiers of at most 256 characters.',
+  invalid_ids: 'Ids must contain 1 to 100 valid identifiers of at most 256 characters.',
+  invalid_collections: 'Collections must contain 1 to 100 valid identifiers of at most 256 characters.',
   invalid_intersects: 'Intersects must be a valid bounded GeoJSON geometry with closed polygon rings.',
   bbox_intersects_conflict: 'Bbox and intersects cannot be used together.',
   unsupported_media_type: 'POST search requires application/json.',
   query_too_large: 'The POST body exceeds the allowed size.',
-  intersects_budget_exceeded: 'Narrow ids, collections or datetime to reduce exact intersection work.',
+  intersects_budget_exceeded: 'Narrow datetime or ids, or collections across datasets, to reduce distinct-footprint work over the whole result set. Limit does not reduce this budget.',
 }
 
 function queryErrorCode(error: unknown): string {
@@ -42,19 +42,18 @@ export function stacError(status: number, error: string): Response {
 }
 
 export async function serveStac(request: Request, env: CatalogEnv): Promise<Response> {
-  const response = await serveStacResponse(request, env)
-  for (const [key, value] of Object.entries(corsHeaders)) response.headers.set(key, value)
-  return response
-}
-
-async function serveStacResponse(request: Request, env: CatalogEnv): Promise<Response> {
   if (env.STAC_ENABLED !== 'true') return stacError(404, 'not_found')
   if (!env.CATALOG_DB) return stacError(503, 'binding_missing')
   const url = new URL(request.url)
   const path = url.pathname.replace(/\/$/, '').replace(/^\/api\/v1\/stac\/?/, '').split('/').filter(Boolean)
   const search = path.join('/') === 'search'
   const allow = search ? 'GET, HEAD, POST, OPTIONS' : 'GET, HEAD, OPTIONS'
+  const knownPath = !path.length || (path.length === 1 && ['search', 'collections', 'items', 'conformance', 'api', 'api.html'].includes(path[0]))
+    || (path.length === 2 && ['collections', 'items'].includes(path[0]))
+    || ([3, 4].includes(path.length) && path[0] === 'collections' && path[2] === 'items')
+  if (request.method === 'OPTIONS' && !knownPath) return stacError(404, 'not_found')
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: {
+    ...corsHeaders, 'Access-Control-Max-Age': '600',
     Allow: allow, 'Access-Control-Allow-Methods': allow, 'Access-Control-Allow-Headers': 'Content-Type, If-None-Match',
     'Cache-Control': 'no-store',
   } })
@@ -72,6 +71,7 @@ async function serveStacResponse(request: Request, env: CatalogEnv): Promise<Res
   if ([...url.searchParams.keys()].some(key => !listing || (path.length === 1 && path[0] === 'collections' && !['limit', 'cursor'].includes(key)))) return stacError(400, 'invalid_query')
   let query
   try { query = parseStacQuery(url.searchParams, search) } catch (error) { return stacError(400, queryErrorCode(error)) }
+  if (query.intersects) url.searchParams.set('intersects', JSON.stringify(query.intersects))
   const limit = query.limit
   const publication = await readStacPublication(env)
   const root = publication.catalog.links.find(link => link.rel === 'self')!.href
@@ -95,9 +95,9 @@ async function serveStacResponse(request: Request, env: CatalogEnv): Promise<Res
       return stacError(400, error.message)
     }
     const cursor = url.searchParams.get('cursor')
-    const nextIndex = cursor && search ? entries.findIndex(entry => entry.id.localeCompare(cursor) > 0) : -1
-    const offset = cursor ? search ? nextIndex < 0 ? entries.length : nextIndex : entries.findIndex(entry => entry.id === cursor) + 1 : 0
-    if (cursor && !search && offset === 0) return stacError(400, 'invalid_cursor')
+    entries.sort((first, second) => first.id < second.id ? -1 : first.id > second.id ? 1 : 0)
+    const nextIndex = cursor ? entries.findIndex(entry => entry.id > cursor) : -1
+    const offset = cursor ? nextIndex < 0 ? entries.length : nextIndex : 0
     const page = entries.slice(offset, offset + limit)
     const self = new URL(canonical + url.search)
     if (cursor) self.searchParams.set('cursor', cursor)
@@ -135,7 +135,7 @@ async function serveStacResponse(request: Request, env: CatalogEnv): Promise<Res
   if (geojson) media = 'application/geo+json'
   const body = media === 'text/html' ? document as string : JSON.stringify(document)
   const etag = await computeEtag(body)
-  const headers = { 'Content-Type': `${media}; charset=utf-8`, Vary: 'Accept',
+  const headers = { ...corsHeaders, 'Content-Type': `${media}; charset=utf-8`, Vary: 'Accept',
     ETag: etag, 'Cache-Control': request.method === 'POST' ? 'no-store' : 'public, no-cache, must-revalidate',
     Link: `<${root}>; rel="root"; type="application/json"` }
   const matches = ['GET', 'HEAD'].includes(request.method) && request.headers.get('if-none-match')?.split(',').some(value => value.trim() === '*' || value.trim().replace(/^W\//, '') === etag)

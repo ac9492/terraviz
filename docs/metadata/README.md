@@ -1155,6 +1155,8 @@ cross-origin client checks, and the outstanding Pages CPU rollout gate.
 1. Implement the required Core and OGC API Features conformance classes.
 2. Add `/conformance` and service description resources.
 3. Implement Item Search over D1, including geometry and datetime indexes.
+  **Implementation note:** Search filters the authoritative verified D1-backed
+  publication in memory; Phase 4 adds no geometry/datetime indexes or migration.
 4. Run an external STAC API conformance suite and advertise only passing
    classes.
 5. Test behavior with PySTAC Client, STAC Browser, QGIS, and at least one

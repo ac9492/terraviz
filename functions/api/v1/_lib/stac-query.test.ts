@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import booleanIntersects from '@turf/boolean-intersects'
 import { matchesStacQuery, parseStacQuery, MAX_INTERSECTS_POSITIONS, MAX_INTERSECTS_MEMBERS, MAX_INTERSECTS_POSITION_TESTS } from './stac-query'
 import { searchStacItems } from './stac-search'
+import { buildStacGeometry } from './stac-builders'
 import type { StacItem } from './stac-types'
 
 vi.mock('@turf/boolean-intersects', async importOriginal => {
@@ -52,6 +53,11 @@ describe('STAC query contract', () => {
     expect(booleanIntersects).toHaveBeenCalledTimes(1)
   })
   it('derives bounds from coordinates rather than caller-supplied GeoJSON bbox metadata', () => {
+    for (const geometry of [
+      { type: 'Point', coordinates: [0, 0], bbox: 'garbage' },
+      { type: 'GeometryCollection', bbox: 'garbage', geometries: [{ type: 'Point', coordinates: [0, 0] }] },
+      { type: 'GeometryCollection', geometries: [{ type: 'Point', coordinates: [0, 0], bbox: 'garbage' }] },
+    ]) expect(() => parseStacQuery(new URLSearchParams({ intersects: JSON.stringify(geometry) }), true)).toThrow('invalid_intersects')
     const query = parseStacQuery(new URLSearchParams({ intersects: JSON.stringify({ type: 'GeometryCollection', bbox: [0, 0, 0, 0],
       geometries: [{ type: 'Point', coordinates: [2, 2], bbox: [0, 0, 0, 0] }] }) }), true)
     expect(query.intersectsBbox).toEqual([2, 2, 2, 2])
@@ -72,16 +78,87 @@ describe('STAC query contract', () => {
     const query = parseStacQuery(new URLSearchParams({ intersects: JSON.stringify({ type: 'Polygon', coordinates: [ring] }) }), true)
     const item = { id: 'item', bbox: [0.8, 0.8, 0.9, 0.9], properties: {}, geometry: { type: 'Polygon', coordinates: [[[0.8, 0.8], [0.9, 0.8], [0.9, 0.9], [0.8, 0.9], [0.8, 0.8]]] } } as StacItem
     const count = MAX_INTERSECTS_POSITION_TESTS / MAX_INTERSECTS_POSITIONS
+    const distinct = Array.from({ length: count + 1 }, (_, index) => ({ ...item,
+      ...buildStacGeometry({ w: 0.8 + index * 0.0001, s: 0.8, e: 0.9, n: 0.9 }) }) as StacItem)
     vi.mocked(booleanIntersects).mockClear()
-    await expect(searchStacItems(Array(count).fill(item), query)).resolves.toEqual([])
+    await expect(searchStacItems(distinct.slice(0, count), query)).resolves.toEqual([])
     expect(booleanIntersects).toHaveBeenCalledTimes(count)
     vi.mocked(booleanIntersects).mockClear()
-    await expect(searchStacItems(Array(count + 1).fill(item), query)).rejects.toThrow('intersects_budget_exceeded')
+    await expect(searchStacItems(distinct, query)).rejects.toThrow('intersects_budget_exceeded')
     expect(booleanIntersects).toHaveBeenCalledTimes(count)
     vi.mocked(booleanIntersects).mockClear()
     await expect(searchStacItems(Array(5000).fill({ ...item, bbox: [10, 10, 11, 11] }), query)).resolves.toEqual([])
     expect(booleanIntersects).not.toHaveBeenCalled()
+    vi.mocked(booleanIntersects).mockClear()
+    await expect(searchStacItems(Array(5000).fill(item), query)).resolves.toEqual([])
+    expect(booleanIntersects).toHaveBeenCalledTimes(1)
+    const pointQuery = parseStacQuery(new URLSearchParams({ intersects: JSON.stringify({ type: 'Point', coordinates: [0.85, 0.85] }) }), true)
+    vi.mocked(booleanIntersects).mockClear()
+    await expect(searchStacItems(Array(5000).fill(item), pointQuery)).resolves.toHaveLength(5000)
+    expect(booleanIntersects).toHaveBeenCalledTimes(1)
+    const matching = { ...item, ...buildStacGeometry({ w: -0.1, s: -0.1, e: 0.1, n: 0.1 }) }
+    vi.mocked(booleanIntersects).mockClear()
+    await expect(searchStacItems(Array(5000).fill(matching), query)).resolves.toHaveLength(5000)
+    expect(booleanIntersects).toHaveBeenCalledTimes(1)
+    vi.mocked(booleanIntersects).mockClear()
+    await expect(searchStacItems(Array(5000).fill(matching), query)).resolves.toHaveLength(5000)
+    expect(booleanIntersects).toHaveBeenCalledTimes(1)
   })
+  it('bounds multipart fan-out against distinct antimeridian footprints', async () => {
+    const geometries = Array.from({ length: MAX_INTERSECTS_MEMBERS }, () => ({ type: 'MultiPolygon', coordinates: [
+      [[[175, 3], [176, 3], [176, 4], [175, 3]]],
+      [[[-176, -4], [-175, -4], [-175, -3], [-176, -4]]],
+    ] }))
+    const query = parseStacQuery(new URLSearchParams({ intersects: JSON.stringify({ type: 'GeometryCollection', geometries }) }), true)
+    expect(query.intersectsPositions).toBe(MAX_INTERSECTS_POSITIONS)
+    const items = Array.from({ length: 65 }, (_, index) => ({ id: index.toString().padStart(5, '0'), properties: {},
+      ...buildStacGeometry({ w: 170 + index * 0.001, s: -2, e: -170, n: 2 }) }) as StacItem)
+    vi.mocked(booleanIntersects).mockClear()
+    await expect(searchStacItems(items.slice(0, 64), query)).resolves.toEqual([])
+    expect(booleanIntersects).toHaveBeenCalledTimes(64)
+    await expect(searchStacItems(items, query)).rejects.toThrow('intersects_budget_exceeded')
+    if (process.env.STAC_BENCHMARKS === 'true') {
+      const ring = Array.from({ length: MAX_INTERSECTS_POSITIONS - 1 }, (_, index) => {
+        const angle = index * 2 * Math.PI / (MAX_INTERSECTS_POSITIONS - 1)
+        return [Math.cos(angle), Math.sin(angle)]
+      })
+      ring.push(ring[0])
+      const polygon = parseStacQuery(new URLSearchParams({ intersects: JSON.stringify({ type: 'Polygon', coordinates: [ring] }) }), true)
+      const rectangle = (index: number, west: number) => ({ id: index.toString().padStart(5, '0'), properties: {},
+        ...buildStacGeometry({ w: west, s: west, e: west + 0.1, n: west + 0.1 }) }) as StacItem
+      const repeated = Array.from({ length: 5000 }, (_, index) => rectangle(index, 0.8))
+      const distinct = Array.from({ length: 65 }, (_, index) => ({ ...rectangle(index, 0.8),
+        ...buildStacGeometry({ w: 0.8 + index * 0.0001, s: 0.8, e: 0.9, n: 0.9 }) }) as StacItem)
+      const point = parseStacQuery(new URLSearchParams({ intersects: JSON.stringify({ type: 'Point', coordinates: [0.85, 0.85] }) }), true)
+      const cases = [
+        { name: 'polygon-disjoint-5000', query: polygon, items: Array.from({ length: 5000 }, (_, index) => rectangle(index, 10)) },
+        { name: 'polygon-distinct-64', query: polygon, items: distinct.slice(0, 64) },
+        { name: 'polygon-distinct-65', query: polygon, items: distinct },
+        { name: 'polygon-repeated-5000', query: polygon, items: repeated },
+        { name: 'point-repeated-5000', query: point, items: repeated },
+        { name: 'multipart-antimeridian-distinct-64', query, items: items.slice(0, 64) },
+      ]
+      for (const fixture of cases) {
+        const timings: number[] = []
+        let outcome = 'complete'
+        for (const iteration of Array.from({ length: 6 }, (_, index) => index)) {
+          const started = performance.now()
+          try { await searchStacItems(fixture.items, fixture.query) }
+          catch (error) { if (!(error instanceof Error) || error.message !== 'intersects_budget_exceeded') throw error; outcome = error.message }
+          if (iteration) timings.push(performance.now() - started)
+        }
+        timings.sort((first, second) => first - second)
+        console.log('STAC_BENCHMARK', JSON.stringify({ node: process.version, name: fixture.name,
+          medianMs: timings[2], maximumMs: timings[4], outcome }))
+      }
+    }
+  })
+
+  it('sorts mixed-case identifiers in deterministic code-unit order', async () => {
+    const items = ['a', '_', 'B', 'A'].map(id => ({ id, properties: {} }) as StacItem)
+    expect((await searchStacItems(items, { limit: 1 })).map(item => item.id)).toEqual(['A', 'B', '_', 'a'])
+  })
+
   it('maps remaining Turf exceptions to a stable query error', () => {
     const item = { bbox: [0, 0, 1, 1], properties: {}, geometry: { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } } as StacItem
     const query = parseStacQuery(new URLSearchParams({ intersects: JSON.stringify({ type: 'Point', coordinates: [0.5, 0.5] }) }), true)

@@ -11,6 +11,7 @@ import pyogrio
 import requests
 import stac_geoparquet
 from pystac_client import Client
+from pystac_client import __version__ as pystac_client_version
 
 root, collection = sys.argv[1:3]
 client = Client.open(root)
@@ -47,5 +48,5 @@ with tempfile.TemporaryDirectory() as directory:
     assert len(restored) == 120
     assert set(restored["id"]) == {item.id for item in get_items}
     assert restored.geometry.notna().all()
-print(json.dumps({"pystac_client": "0.9.0", "stac_geoparquet": stac_geoparquet.__version__, "indexed_items": 120, "get_post_equal": True,
+print(json.dumps({"pystac_client": pystac_client_version, "stac_geoparquet": stac_geoparquet.__version__, "indexed_items": 120, "get_post_equal": True,
                  "gdal": ".".join(str(part) for part in pyogrio.__gdal_version__), "gdal_features": len(oapif)}))

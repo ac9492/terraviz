@@ -5,8 +5,8 @@ import type { StacItem } from './stac-types'
 import { matchesStacQuery, MAX_INTERSECTS_POSITION_TESTS, type StacQuery } from './stac-query'
 
 export async function searchStacItems(items: StacItem[], query: StacQuery): Promise<StacItem[]> {
-  const budget = { remaining: MAX_INTERSECTS_POSITION_TESTS }
-  return items.filter(item => matchesStacQuery(item, query, budget)).sort((first, second) => first.id.localeCompare(second.id))
+  const budget = { remaining: MAX_INTERSECTS_POSITION_TESTS, intersections: new Map<string, boolean>() }
+  return items.filter(item => matchesStacQuery(item, query, budget)).sort((first, second) => first.id < second.id ? -1 : first.id > second.id ? 1 : 0)
 }
 
 export async function stacPostParameters(request: Request): Promise<URLSearchParams> {

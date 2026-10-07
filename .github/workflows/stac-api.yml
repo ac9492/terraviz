@@ -25,11 +25,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
         with:
           version: '0.11.29'
       - run: npm ci
@@ -43,11 +45,13 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
         with:
           version: '0.11.29'
       - run: npm ci
@@ -60,7 +64,7 @@ jobs:
           git -C .wrangler/stac-browser fetch --depth 1 origin "$STAC_BROWSER_COMMIT"
           git -C .wrangler/stac-browser checkout --detach FETCH_HEAD
           test "$(git -C .wrangler/stac-browser rev-parse HEAD)" = "$STAC_BROWSER_COMMIT"
-          npm ci --prefix .wrangler/stac-browser
+          npm ci --ignore-scripts --prefix .wrangler/stac-browser
           SB_historyMode='hash' npm run build --prefix .wrangler/stac-browser
           npx playwright install --with-deps chromium
       - name: Install QGIS provider

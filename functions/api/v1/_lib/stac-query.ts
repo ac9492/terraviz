@@ -27,13 +27,16 @@ function closedRing(ring: Position[]): boolean {
 function validGeometry(value: unknown, budget = { positions: 0, members: 0 }, depth = 0): boolean {
   if (depth > 8 || !value || typeof value !== 'object') return false
   const geometry = value as Record<string, unknown>
-  delete geometry.bbox
-  if (geometry.type === 'GeometryCollection') return Array.isArray(geometry.geometries)
-    && geometry.geometries.length > 0 && geometry.geometries.every(child => ++budget.members <= MAX_INTERSECTS_MEMBERS && validGeometry(child, budget, depth + 1))
-  if (!countPositions(geometry.coordinates, budget) || !validateGeometry(value)) return false
+  if ('bbox' in geometry && (!Array.isArray(geometry.bbox) || ![4, 6].includes(geometry.bbox.length)
+    || !geometry.bbox.every(coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate)))) return false
+  if (geometry.type === 'GeometryCollection') {
+    if (!Array.isArray(geometry.geometries) || !geometry.geometries.length
+      || !geometry.geometries.every(child => ++budget.members <= MAX_INTERSECTS_MEMBERS && validGeometry(child, budget, depth + 1))) return false
+  } else if (!countPositions(geometry.coordinates, budget) || !validateGeometry(value)) return false
   const validated = value as Geometry
-  if (validated.type === 'Polygon') return validated.coordinates.every(closedRing)
-  if (validated.type === 'MultiPolygon') return validated.coordinates.every(polygon => polygon.length > 0 && polygon.every(closedRing))
+  if (validated.type === 'Polygon' && !validated.coordinates.every(closedRing)) return false
+  if (validated.type === 'MultiPolygon' && !validated.coordinates.every(polygon => polygon.length > 0 && polygon.every(closedRing))) return false
+  delete geometry.bbox
   return true
 }
 
@@ -86,7 +89,10 @@ export function parseStacQuery(params: URLSearchParams, search = false): StacQue
     query.intersectsBbox = bounds
     query.intersectsPositions = budget.positions
   }
-  if (params.has('cursor')) query.cursor = params.get('cursor')!
+  if (params.has('cursor')) {
+    query.cursor = params.get('cursor')!
+    if (!query.cursor.length || query.cursor.length > 256) throw new Error('invalid_cursor')
+  }
   if (params.has('bbox')) {
     const parts = params.get('bbox')!.split(',')
     if (parts.some(value => !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim()))) throw new Error('invalid_bbox')
@@ -117,7 +123,7 @@ export function parseStacQuery(params: URLSearchParams, search = false): StacQue
   return query
 }
 
-export function matchesStacQuery(item: StacItem, query: StacQuery, budget?: { remaining: number }): boolean {
+export function matchesStacQuery(item: StacItem, query: StacQuery, budget?: { remaining: number; intersections: Map<string, boolean> }): boolean {
   if (query.ids && !query.ids.includes(item.id)) return false
   if (query.collections && (!item.collection || !query.collections.includes(item.collection))) return false
   if (query.interval) {
@@ -133,12 +139,18 @@ export function matchesStacQuery(item: StacItem, query: StacQuery, budget?: { re
   }
   if (query.intersects) {
     if (!item.geometry || !item.bbox || !boxesOverlap(item.bbox, query.intersectsBbox ?? turfBbox(query.intersects))) return false
+    const footprint = item.bbox.join(',')
+    const cached = budget?.intersections.get(footprint)
+    if (cached !== undefined) return cached
     if (budget) {
       budget.remaining -= query.intersectsPositions ?? MAX_INTERSECTS_POSITIONS
       if (budget.remaining < 0) throw new Error('intersects_budget_exceeded')
     }
-    try { if (!booleanIntersects(item.geometry, query.intersects)) return false }
+    let intersects: boolean
+    try { intersects = booleanIntersects(item.geometry, query.intersects) }
     catch { throw new Error('invalid_intersects') }
+    budget?.intersections.set(footprint, intersects)
+    if (!intersects) return false
   }
   return true
 }

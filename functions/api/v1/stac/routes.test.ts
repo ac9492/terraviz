@@ -247,7 +247,7 @@ describe('STAC public routes', () => {
     } finally { sqlite.close() }
   })
 
-  it.each(['limit=0', 'limit=-1', 'limit=1.5', 'limit=abc', 'cursor=unknown', 'bbox=0,0,1'])('rejects malformed/unsupported listing query %s', async query => {
+  it.each(['limit=0', 'limit=-1', 'limit=1.5', 'limit=abc', 'cursor=', `cursor=${'x'.repeat(257)}`, 'bbox=0,0,1'])('rejects malformed/unsupported listing query %s', async query => {
     const { sqlite, env } = stacRouteFixture()
     try {
       const response = await onRequestGet(makeCtx({ env, url: `https://node.example/api/v1/stac/items?${query}` }) as never)

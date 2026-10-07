@@ -71,6 +71,32 @@ describe('STAC Item Search', () => {
     } finally { sqlite.close() }
   })
 
+  it('continues the global Item list after its cursor goes private', async () => {
+    const { sqlite, ids, env } = stacRouteFixture(3)
+    try {
+      const first = await (await serveStac(new Request(`${root}/items?limit=1`), env)).json() as Page
+      const next = first.links.find(link => link.rel === 'next')!
+      sqlite.prepare("UPDATE datasets SET visibility='private' WHERE id=?").run(ids[0])
+      const response = await serveStac(new Request(next.href), env)
+      expect(response.status).toBe(200)
+      expect((await response.json() as Page).features.map(item => item.id)).toEqual([ids[1]])
+    } finally { sqlite.close() }
+  })
+
+  it('strips validated bbox metadata from POST self and next link geometries', async () => {
+    const { sqlite, env } = stacRouteFixture(2)
+    try {
+      const response = await serveStac(new Request(`${root}/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 1, intersects: { type: 'GeometryCollection', bbox: [0, 0, 0, 0],
+          geometries: [{ type: 'Point', coordinates: [0, 0], bbox: [0, 0, 0, 0] }] } }) }), env)
+      expect(response.status).toBe(200)
+      const page = await response.json() as Page
+      const links = page.links.filter(link => ['self', 'next'].includes(link.rel))
+      expect(links).toHaveLength(2)
+      for (const link of links) expect(link.body?.intersects).toEqual({ type: 'GeometryCollection', geometries: [{ type: 'Point', coordinates: [0, 0] }] })
+    } finally { sqlite.close() }
+  })
+
   it('handles bbox crossings, elevation zero and null geometry', async () => {
     const { sqlite, ids, env } = stacRouteFixture(2)
     try {
@@ -113,6 +139,13 @@ describe('STAC Item Search', () => {
       } as Parameters<typeof stampTranscodingForVideoSource>[2], '2026-10-05T00:00:00Z')).toBe(1)
       expect((await search()).features).toEqual((await browse()).features)
       expect((await search()).features).toHaveLength(2)
+      const saved = (await browse()).features
+      expect(sqlite.prepare('DELETE FROM stac_history_items WHERE julianday(start_time)=julianday(?)').run(saved[0].properties.datetime).changes).toBe(1)
+      for (const path of ['items', `collections/NODE000-${ids[0]}/items`]) {
+        const response = await serveStac(new Request(`${root}/${path}?limit=1&cursor=${encodeURIComponent(saved[0].id)}`), env)
+        expect(response.status).toBe(200)
+        expect((await response.json() as Page).features.map(item => item.id)).toEqual([saved[1].id])
+      }
       sqlite.exec("UPDATE datasets SET visibility='private'")
       expect((await page()).features).toEqual([])
       sqlite.exec("UPDATE datasets SET visibility='public',frame_source_filenames_ref='r2:changed.json'")
@@ -121,6 +154,9 @@ describe('STAC Item Search', () => {
   })
 
   it.each([
+    [{ ids: [] }, 400], [{ cursor: 'x'.repeat(257) }, 400],
+    [{ intersects: { type: 'Point', coordinates: [0, 0], bbox: 'garbage' } }, 400],
+    [{ intersects: { type: 'GeometryCollection', geometries: [{ type: 'Point', coordinates: [0, 0], bbox: 'garbage' }] } }, 400],
     [{ bbox: [0, 0, 1, 1], intersects: { type: 'Point', coordinates: [0, 0] } }, 400],
     [{ ids: 'not-an-array' }, 400], [{ limit: '1' }, 400], [{ ids: ['one,two'] }, 400],
     [{ datetime: '2026-02-30T00:00:00Z' }, 400], [{ intersects: { type: 'Feature' } }, 400],
@@ -180,8 +216,9 @@ describe('STAC Item Search', () => {
   })
 
   it('returns an explicit uncached CORS error rather than partial over-budget results', async () => {
-    const { sqlite, env } = stacRouteFixture(MAX_INTERSECTS_POSITION_TESTS / MAX_INTERSECTS_POSITIONS + 1)
+    const { sqlite, ids, env } = stacRouteFixture(MAX_INTERSECTS_POSITION_TESTS / MAX_INTERSECTS_POSITIONS + 1)
     try {
+      for (const [index, id] of ids.entries()) sqlite.prepare('UPDATE datasets SET bbox_w=? WHERE id=?').run(-60 + index * 0.001, id)
       const ring = Array.from({ length: MAX_INTERSECTS_POSITIONS - 1 }, (_, index) => {
         const angle = index * 2 * Math.PI / (MAX_INTERSECTS_POSITIONS - 1)
         return [Math.cos(angle), Math.sin(angle)]
@@ -195,6 +232,31 @@ describe('STAC Item Search', () => {
       expect(await response.json()).toMatchObject({ error: 'intersects_budget_exceeded', code: 'intersects_budget_exceeded', description: expect.any(String) })
     } finally { sqlite.close() }
   })
+  it('searches a real 3650-frame sequence with a maximum polygon regardless of page limit', async () => {
+    const { sqlite, ids, env: base } = stacRouteFixture()
+    const count = 3650
+    const manifest = Array.from({ length: count }, (_, index) => ({ index, filename: `${index}.png`, digest: `sha256:${index.toString(16).padStart(64, '0')}` }))
+    const env: CatalogEnv = { ...base, STAC_HISTORY_CAPTURE: 'true', R2_PUBLIC_BASE: 'https://data.example',
+      CATALOG_R2: { get: async () => ({ text: async () => JSON.stringify(manifest) }) } as unknown as R2Bucket }
+    try {
+      sqlite.prepare("UPDATE datasets SET slug='long-frame-sequence',frame_count=?,frame_extension='png',frame_source_filenames_ref='r2:manifest.json',period='P1D',format='video/mp4',end_time='2036-01-01T00:00:00Z'").run(count)
+      expect(await publishDataset(env, ids[0])).toMatchObject({ ok: true })
+      const ring = Array.from({ length: MAX_INTERSECTS_POSITIONS - 1 }, (_, index) => {
+        const angle = index * 2 * Math.PI / (MAX_INTERSECTS_POSITIONS - 1)
+        return [Math.cos(angle), Math.sin(angle)]
+      })
+      ring.push(ring[0])
+      const geometry = encodeURIComponent(JSON.stringify({ type: 'Polygon', coordinates: [ring] }))
+      const started = performance.now()
+      const response = await serveStac(new Request(`${root}/search?collections=NODE000-${ids[0]}&limit=1&intersects=${geometry}`), env)
+      if (process.env.STAC_BENCHMARKS === 'true') console.log('STAC_LONG_SEQUENCE', JSON.stringify({ node: process.version, frames: count, elapsedMs: performance.now() - started }))
+      expect(response.status).toBe(200)
+      const page = await response.json() as Page
+      expect(page.numberMatched).toBe(count)
+      expect(page.features).toHaveLength(1)
+      expect(page.links.some(link => link.rel === 'next')).toBe(true)
+    } finally { sqlite.close() }
+  }, 60000)
   it('does not expose errors from excessively nested POST JSON', async () => {
     const { sqlite, env } = stacRouteFixture()
     try {
